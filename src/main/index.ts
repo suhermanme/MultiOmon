@@ -1,8 +1,9 @@
 import { join } from 'node:path';
 import { electronApp, is, optimizer } from '@electron-toolkit/utils';
 import { app, BrowserWindow, shell } from 'electron';
+import { createRepositories, SqliteDatabase } from '../infrastructure/database';
 import { registerIpcHandlers } from './ipc';
-import { createMockAccountManager } from './mock-accounts';
+import { createMockAccountManager, seedMockProjection } from './mock-accounts';
 import { createWindowOptions } from './window-options';
 
 function createMainWindow(): BrowserWindow {
@@ -27,9 +28,17 @@ function createMainWindow(): BrowserWindow {
 
 void app.whenReady().then(async () => {
   electronApp.setAppUserModelId('com.multiomon.desktop');
-  const accountManager = await createMockAccountManager();
+  const database = SqliteDatabase.open(
+    join(app.getPath('userData'), 'database', 'multiomon.sqlite'),
+  );
+  const repositories = createRepositories(database);
+  seedMockProjection(database, repositories);
+  const accountManager = await createMockAccountManager(repositories.accounts);
   const unregisterIpcHandlers = registerIpcHandlers(accountManager);
-  app.once('before-quit', unregisterIpcHandlers);
+  app.once('before-quit', () => {
+    unregisterIpcHandlers();
+    database.close();
+  });
 
   app.on('browser-window-created', (_event, window) => {
     optimizer.watchWindowShortcuts(window);

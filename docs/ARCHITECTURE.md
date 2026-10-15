@@ -2,15 +2,15 @@
 
 ## Scope
 
-M01 provides the desktop shell, provider-independent messaging domain models, an in-memory
-multi-account manager, and renderer account switching. Persistence, messaging providers, and
-WhatsApp connectivity are intentionally absent.
+M02 provides the desktop shell, provider-independent messaging domain models, independently managed
+mock sessions, and a durable SQLite application projection. Messaging providers and WhatsApp
+connectivity are intentionally absent.
 
 ## Process boundaries
 
 ```text
 Electron main process
-  owns AccountManager, independent mock sessions, IPC, and OS access
+  owns AccountManager, SQLite, repositories, mock sessions, IPC, and OS access
           │
           │ allow-listed, typed IPC
           ▼
@@ -25,6 +25,9 @@ React renderer
 The main process creates windows with `contextIsolation: true`, `nodeIntegration: false`,
 `sandbox: true`, and `webSecurity: true`. The preload exports an immutable `DesktopApi`; IPC channel
 names and payload DTOs are defined in `src/shared/contracts`. Domain objects do not cross IPC.
+
+The SQLite connection, file path, migrations, SQL, and repository implementations remain entirely
+in the main process. No database handle or filesystem path is exposed to the renderer.
 
 ## Multi-account ownership
 
@@ -58,7 +61,7 @@ src/renderer/             React application and presentation
 src/shared/               process-safe contracts and primitives
 src/domain/               provider-independent messaging models and identity
 src/application/          AccountManager, session boundary, and DTO mapping
-src/infrastructure/       database, messaging, and secure storage adapters (reserved)
+src/infrastructure/       SQLite implementation; messaging and secure storage reserved
 tests/unit/               isolated policy and domain tests
 tests/integration/        cross-module and renderer integration tests
 ```
@@ -80,6 +83,36 @@ The M01 `ManagedAccountSession` is deliberately transport-neutral and backed onl
 `InMemoryAccountSession`. M03 will introduce the formal messaging provider abstraction; M01 does not
 preempt that provider API.
 
+## Durable local projection
+
+```text
+domain/application repository interfaces
+                 ▲
+                 │ normalized domain values
+                 │
+SQLite repositories ── SqliteDatabase ── versioned migrations
+                                            │
+                                            ▼
+                         userData/database/multiomon.sqlite
+```
+
+`better-sqlite3` is isolated below `src/infrastructure/database`. The connection enables foreign
+keys, a five-second busy timeout, and WAL mode for file-backed databases. `SqliteDatabase` exposes a
+small transaction runner; repositories convert between rows and domain values.
+
+The initial schema contains `accounts`, `contacts`, `chats`, and `messages`. Messaging rows use
+composite `(account_id, id)` primary keys, and remote message deduplication uses the unique key
+`(account_id, remote_id)`. Foreign keys include account context so identical IDs in separate
+accounts cannot collide.
+
+Migrations are ordered, immutable code entries recorded in `schema_migrations`. Each unapplied
+migration runs in its own SQLite transaction. Startup refuses databases newer than the application
+rather than deleting or recreating them.
+
+Message pages are ordered newest-first by `(sent_at DESC, id DESC)`. Cursors contain both values,
+which provides stable pagination even when several messages share a timestamp. Page sizes are
+bounded to 1–200.
+
 ## Build and packaging
 
 electron-vite produces separate main, preload, and renderer bundles in `out/`. electron-builder
@@ -92,4 +125,6 @@ corresponding platform before support is claimed.
 - Domain tests validate connection transitions and account-scoped identity.
 - Application tests validate multi-account connection, switching, and failure isolation.
 - Integration tests validate that React consumes only typed account snapshot DTOs.
+- Temporary-file database tests cover clean migration, version upgrades, transactions, restart
+  persistence, multi-account isolation, deduplication, and cursor pagination.
 - Live WhatsApp connectivity is never required for normal tests.

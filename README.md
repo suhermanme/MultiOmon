@@ -8,10 +8,14 @@ multiple WhatsApp accounts. It targets macOS, Windows, and Linux.
 
 ## Current milestone
 
-M01 establishes provider-independent messaging domain models and a main-process-owned
-multi-account foundation. Three in-memory mock accounts connect independently and can be switched
-from the account rail without disconnecting one another. SQLite and WhatsApp connectivity are not
-implemented yet.
+M02 adds a durable SQLite projection behind typed repository interfaces. Versioned migrations,
+transactional startup seeding, account-scoped identity, idempotent message ingest, and cursor-based
+message pagination are implemented. Three mock accounts and their local chat/contact/message data
+survive application restarts. WhatsApp connectivity is not implemented yet.
+
+Local application data is stored below Electron's platform-specific `userData` directory in
+`database/multiomon.sqlite`. Large media will use filesystem storage in a later milestone rather
+than SQLite blobs.
 
 ## Development
 

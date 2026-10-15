@@ -106,3 +106,44 @@ A connection failure or state transition for one account must not terminate or o
 Consequences:
 Session events are projected into manager snapshots independently. Later providers must retain this
 one-session-per-account lifecycle.
+
+## ADR-009 — Synchronous SQLite behind repository ports
+
+Decision:
+Use `better-sqlite3` only in the Electron main process, behind application-owned typed repository
+interfaces and a transaction runner.
+
+Reason:
+SQLite operations are short local transactions, and the synchronous API gives explicit transaction
+boundaries without adding an ORM or leaking SQL concerns into domain/application code.
+
+Consequences:
+Long-running database work must be measured and kept off latency-sensitive paths. The native module
+must be rebuilt for each packaged Electron target.
+
+## ADR-010 — Forward-only transactional migrations
+
+Decision:
+Store ordered migration versions in `schema_migrations` and apply each missing migration in a
+transaction. Refuse a database whose recorded version is newer than the application.
+
+Reason:
+Schema upgrades must preserve user data and fail visibly; destructive automatic recreation is not
+acceptable.
+
+Consequences:
+Applied migration SQL is immutable. Schema corrections require a new migration version.
+
+## ADR-011 — Composite persistence identity and keyset pagination
+
+Decision:
+Use `(account_id, id)` for persisted messaging identities, `(account_id, remote_id)` for remote
+uniqueness, and `(sent_at, id)` cursors for message pagination.
+
+Reason:
+External IDs may repeat across accounts, provider events may be delivered more than once, and
+timestamps alone do not define stable ordering.
+
+Consequences:
+Every repository query requires account context. Duplicate protocol messages become no-op inserts,
+and pagination remains deterministic when timestamps match.
