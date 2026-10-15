@@ -45,6 +45,36 @@ describe('renderer shell', () => {
           select,
           subscribe: vi.fn().mockReturnValue(vi.fn()),
         },
+        messaging: {
+          listChats: vi.fn((accountId: string) =>
+            Promise.resolve([
+              {
+                id: `${accountId}-chat`,
+                accountId,
+                title: 'Example conversation',
+                kind: 'direct' as const,
+                unreadCount: 0,
+                lastActivityAt: 100,
+              },
+            ]),
+          ),
+          listMessages: vi.fn((accountId: string, chatId: string) =>
+            Promise.resolve([
+              {
+                id: `${accountId}-message`,
+                accountId,
+                chatId,
+                direction: 'incoming' as const,
+                sentAt: 100,
+                content: {
+                  kind: 'system' as const,
+                  text: 'Mock provider projection is connected.',
+                },
+              },
+            ]),
+          ),
+          subscribe: vi.fn().mockReturnValue(vi.fn()),
+        },
       } satisfies DesktopApi,
     });
   });
@@ -63,6 +93,8 @@ describe('renderer shell', () => {
       screen.getByRole('button', { name: /Switch to Community account, Connected/ }),
     ).toBeVisible();
     expect(screen.getByText('Desktop ready')).toBeVisible();
+    expect(screen.getByRole('button', { name: /Example conversation/ })).toBeVisible();
+    expect(await screen.findByText('Mock provider projection is connected.')).toBeVisible();
   });
 
   it('switches active account without changing connection indicators', async () => {

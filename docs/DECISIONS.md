@@ -147,3 +147,34 @@ timestamps alone do not define stable ordering.
 Consequences:
 Every repository query requires account context. Duplicate protocol messages become no-op inserts,
 and pagination remains deterministic when timestamps match.
+
+## ADR-012 — Application-owned messaging provider contract
+
+Decision:
+Define `MessagingProvider`, account-scoped `MessagingSession`, normalized provider values, and a
+discriminated `MessagingEvent` union in the application layer. Infrastructure implementations must
+adapt their protocol into this contract.
+
+Reason:
+Baileys is replaceable infrastructure. Domain, application services, IPC, and React must not depend
+on its objects, lifecycle conventions, or serialization format.
+
+Consequences:
+Each account receives an independent provider session. Adapter mapping is mandatory, and new
+provider capabilities are added to the application contract only when a milestone requires them.
+
+## ADR-013 — Commit provider events before renderer notification
+
+Decision:
+Validate account ownership and persist normalized chat/message events in a SQLite transaction
+before publishing a small projection-change hint. The renderer responds by querying durable DTOs
+through the preload bridge.
+
+Reason:
+SQLite is the durable application projection and must remain the source for renderer state. Direct
+provider-to-React delivery could display uncommitted events, bypass deduplication, and couple UI
+lifetimes to transport lifetimes.
+
+Consequences:
+Repeated protocol messages become silent no-op inserts, renderer refreshes always observe committed
+state, and provider events require explicit domain-to-persistence mapping.

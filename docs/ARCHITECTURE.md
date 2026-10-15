@@ -2,15 +2,15 @@
 
 ## Scope
 
-M02 provides the desktop shell, provider-independent messaging domain models, independently managed
-mock sessions, and a durable SQLite application projection. Messaging providers and WhatsApp
-connectivity are intentionally absent.
+M03 provides the desktop shell, provider-independent messaging domain models, account-scoped
+messaging sessions, a durable SQLite projection, and a complete mock-provider flow. WhatsApp
+connectivity remains intentionally absent.
 
 ## Process boundaries
 
 ```text
 Electron main process
-  owns AccountManager, SQLite, repositories, mock sessions, IPC, and OS access
+  owns AccountManager, MessagingService, providers, SQLite, IPC, and OS access
           │
           │ allow-listed, typed IPC
           ▼
@@ -33,9 +33,9 @@ in the main process. No database handle or filesystem path is exposed to the ren
 
 ```text
 AccountManager (main process)
-  ├── Account A ── InMemoryAccountSession A ── connection state A
-  ├── Account B ── InMemoryAccountSession B ── connection state B
-  └── Account C ── InMemoryAccountSession C ── connection state C
+  ├── Account A ── ProviderAccountSession A ── MockMessagingSession A
+  ├── Account B ── ProviderAccountSession B ── MockMessagingSession B
+  └── Account C ── ProviderAccountSession C ── MockMessagingSession C
            │
            ▼ snapshot DTOs only
        preload bridge → Zustand → React account rail
@@ -60,8 +60,8 @@ src/preload/              narrow context bridge
 src/renderer/             React application and presentation
 src/shared/               process-safe contracts and primitives
 src/domain/               provider-independent messaging models and identity
-src/application/          AccountManager, session boundary, and DTO mapping
-src/infrastructure/       SQLite implementation; messaging and secure storage reserved
+src/application/          AccountManager, provider ports, event projection, and DTO mapping
+src/infrastructure/       SQLite and mock messaging implementations; secure storage reserved
 tests/unit/               isolated policy and domain tests
 tests/integration/        cross-module and renderer integration tests
 ```
@@ -79,9 +79,45 @@ Future Baileys code must exist only below `src/infrastructure/messaging/whatsapp
 objects to provider-independent application/domain values. Neither React nor general domain code may
 import Baileys.
 
-The M01 `ManagedAccountSession` is deliberately transport-neutral and backed only by
-`InMemoryAccountSession`. M03 will introduce the formal messaging provider abstraction; M01 does not
-preempt that provider API.
+`MessagingProvider` creates one `MessagingSession` per account. Its event and command types are
+owned by the application layer and contain no transport-library objects. `ProviderAccountSession`
+adapts provider connection events to the existing account lifecycle. The M01
+`InMemoryAccountSession` remains only as a focused AccountManager test double.
+
+## Messaging event flow
+
+```text
+MockMessagingSession (one per account)
+        │ normalized MessagingEvent
+        ▼
+MessagingService ── validate account ownership
+        │
+        ├── transaction → typed repositories → SQLite
+        │
+        └── projection change hint after commit
+                          │
+                          ▼
+                  IPC / preload bridge
+                          │
+                          ▼
+             Zustand queries durable DTOs → React
+```
+
+Provider chat and message values use remote identifiers but never infrastructure-specific types.
+The application resolves them to account-scoped internal identifiers. Existing chats are resolved
+by `(account_id, remote_id)` before a deterministic ID is created, preserving compatibility with
+older local rows. Replayed message events use repository deduplication and do not emit duplicate
+renderer changes.
+
+The renderer receives only `ChatSummaryDto`, `MessageDto`, account snapshots, and small projection
+change hints. A change hint triggers a fresh SQLite-backed query; protocol events never update React
+directly. M03 intentionally exposes a read-only message view. General message sending UI remains an
+M08 concern even though the mock session can exercise its outgoing-message path in tests.
+
+The mock implementation supports pairing codes, pairing completion, connect/disconnect, incoming
+and outgoing text events, reconnect, logout, initial history replay, and injected failures. It is
+deterministic and requires no network or WhatsApp account. A future Baileys implementation must
+implement the same application-owned interfaces below `src/infrastructure/messaging/whatsapp`.
 
 ## Durable local projection
 
@@ -124,7 +160,11 @@ corresponding platform before support is claimed.
 - Unit tests validate pure policy/configuration, including BrowserWindow security settings.
 - Domain tests validate connection transitions and account-scoped identity.
 - Application tests validate multi-account connection, switching, and failure isolation.
-- Integration tests validate that React consumes only typed account snapshot DTOs.
+- Provider tests validate pairing, lifecycle, incoming/outgoing messages, reconnect, logout, and
+  listener cleanup without network connectivity.
+- Messaging integration tests validate normalized provider events, transactional persistence,
+  deduplication, DTO queries, and simultaneous account isolation.
+- Renderer integration tests validate that React consumes only typed account and messaging DTOs.
 - Temporary-file database tests cover clean migration, version upgrades, transactions, restart
   persistence, multi-account isolation, deduplication, and cursor pagination.
 - Live WhatsApp connectivity is never required for normal tests.

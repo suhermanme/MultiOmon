@@ -5,6 +5,7 @@ import type {
   RuntimeInfo,
 } from '../../shared/contracts/desktop-api';
 import { useAccountStore } from './account-store';
+import { useMessagingStore } from './messaging-store';
 
 type BridgeStatus =
   | { readonly kind: 'checking' }
@@ -58,6 +59,15 @@ export function App(): React.JSX.Element {
   const [bridgeStatus, setBridgeStatus] = useState<BridgeStatus>({ kind: 'checking' });
   const { snapshot, loading, error, applySnapshot, setLoadError, selectAccount } =
     useAccountStore();
+  const {
+    chats,
+    selectedChatId,
+    messages,
+    loading: messagingLoading,
+    error: messagingError,
+    loadAccount,
+    selectChat,
+  } = useMessagingStore();
   const activeAccount =
     snapshot.accounts.find((account) => account.id === snapshot.activeAccountId) ?? null;
 
@@ -65,6 +75,9 @@ export function App(): React.JSX.Element {
     let active = true;
     const unsubscribe = window.multiomon.accounts.subscribe((nextSnapshot) => {
       if (active) applySnapshot(nextSnapshot);
+    });
+    const unsubscribeMessaging = window.multiomon.messaging.subscribe((change) => {
+      if (active) void useMessagingStore.getState().refresh(change);
     });
 
     Promise.all([
@@ -86,11 +99,28 @@ export function App(): React.JSX.Element {
     return () => {
       active = false;
       unsubscribe();
+      unsubscribeMessaging();
     };
   }, [applySnapshot, setLoadError]);
 
+  useEffect(() => {
+    void loadAccount(snapshot.activeAccountId);
+  }, [loadAccount, snapshot.activeAccountId]);
+
   const handleSelect = (accountId: string): void => {
     void selectAccount(accountId);
+  };
+
+  const selectedChat = chats.find((chat) => chat.id === selectedChatId) ?? null;
+
+  const messageText = (content: (typeof messages)[number]['content']): string => {
+    switch (content.kind) {
+      case 'text':
+      case 'system':
+        return content.text;
+      case 'media':
+        return content.caption ?? 'Media attachment';
+    }
   };
 
   return (
@@ -148,39 +178,90 @@ export function App(): React.JSX.Element {
             )}
           </div>
 
-          {error ? (
+          {(error ?? messagingError) ? (
             <div className="account-error" role="alert">
-              {error}
+              {error ?? messagingError}
+            </div>
+          ) : chats.length > 0 ? (
+            <div className="chat-list" aria-label="Local conversations">
+              {chats.map((chat) => (
+                <button
+                  key={chat.id}
+                  className={`chat-row${chat.id === selectedChatId ? ' chat-row-active' : ''}`}
+                  type="button"
+                  aria-pressed={chat.id === selectedChatId}
+                  onClick={() => void selectChat(chat.id)}
+                >
+                  <span className="chat-avatar" aria-hidden="true">
+                    {initials(chat.title)}
+                  </span>
+                  <span className="chat-copy">
+                    <strong>{chat.title}</strong>
+                    <span>{chat.kind === 'group' ? 'Group' : 'Direct conversation'}</span>
+                  </span>
+                  {chat.unreadCount > 0 && <span className="unread-count">{chat.unreadCount}</span>}
+                </button>
+              ))}
             </div>
           ) : (
             <div className="empty-list">
               <div className="empty-list-icon" aria-hidden="true">
                 ≡
               </div>
-              <strong>Conversation list ready</strong>
-              <p>Chats arrive after the provider and persistence foundations are in place.</p>
+              <strong>
+                {messagingLoading ? 'Loading conversations…' : 'No conversations yet'}
+              </strong>
+              <p>New conversations will appear here after they are stored locally.</p>
             </div>
           )}
         </section>
 
         <section className="conversation-view" aria-label="Current conversation">
-          <div className="empty-conversation">
-            <div className="orbit-mark" aria-hidden="true">
-              <span />
-              <span />
-              <span />
+          {selectedChat ? (
+            <div className="message-panel">
+              <header className="message-header">
+                <span className="section-label">Local projection</span>
+                <h2>{selectedChat.title}</h2>
+              </header>
+              <div className="message-list" aria-label={`Messages in ${selectedChat.title}`}>
+                {messages.map((message) => (
+                  <article
+                    key={message.id}
+                    className={`message-bubble message-${message.direction}`}
+                  >
+                    {message.content.kind === 'system' && (
+                      <span className="message-kind">System</span>
+                    )}
+                    <p>{messageText(message.content)}</p>
+                  </article>
+                ))}
+              </div>
+              <div className="projection-note">
+                Read-only local history · sending arrives in M08
+              </div>
             </div>
-            <span className="section-label">Multi-account foundation</span>
-            <h2>
-              {activeAccount ? `${activeAccount.displayName} is active` : 'Select an account'}
-            </h2>
-            <p>All mock sessions remain connected independently while you move between accounts.</p>
-            {bridgeStatus.kind === 'ready' && (
-              <span className="runtime-label">
-                {bridgeStatus.runtime.platform} · Electron {bridgeStatus.runtime.versions.electron}
-              </span>
-            )}
-          </div>
+          ) : (
+            <div className="empty-conversation">
+              <div className="orbit-mark" aria-hidden="true">
+                <span />
+                <span />
+                <span />
+              </div>
+              <span className="section-label">Multi-account foundation</span>
+              <h2>
+                {activeAccount ? `${activeAccount.displayName} is active` : 'Select an account'}
+              </h2>
+              <p>
+                Provider events are normalized, persisted, and delivered through the secure bridge.
+              </p>
+              {bridgeStatus.kind === 'ready' && (
+                <span className="runtime-label">
+                  {bridgeStatus.runtime.platform} · Electron{' '}
+                  {bridgeStatus.runtime.versions.electron}
+                </span>
+              )}
+            </div>
+          )}
         </section>
       </div>
     </main>

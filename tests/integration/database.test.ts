@@ -20,7 +20,7 @@ import {
   migrations,
   SqliteDatabase,
 } from '../../src/infrastructure/database';
-import { seedMockProjection } from '../../src/main/mock-accounts';
+import { seedMockAccounts } from '../../src/main/mock-accounts';
 
 function account(id: string): Account {
   return { id: createAccountId(id), displayName: `Account ${id}`, createdAt: 100 };
@@ -141,23 +141,19 @@ describe('SQLite persistence', () => {
     expect(repositories.messages.getById(savedAccount.id, savedMessage.id)).toEqual(savedMessage);
   });
 
-  it('restores the application mock projection without reseeding duplicates', () => {
-    seedMockProjection(database, repositories);
+  it('restores mock accounts without reseeding duplicates', () => {
+    seedMockAccounts(database, repositories);
     expect(repositories.accounts.list()).toHaveLength(3);
 
     database.close();
     database = SqliteDatabase.open(filePath);
     repositories = createRepositories(database);
-    seedMockProjection(database, repositories);
+    seedMockAccounts(database, repositories);
 
     expect(repositories.accounts.list()).toHaveLength(3);
     for (const restoredAccount of repositories.accounts.list()) {
-      expect(repositories.contacts.listByAccount(restoredAccount.id)).toHaveLength(1);
-      expect(repositories.chats.listByAccount(restoredAccount.id)).toHaveLength(1);
-      const restoredChat = repositories.chats.listByAccount(restoredAccount.id)[0]!;
-      expect(
-        repositories.messages.listPage(restoredAccount.id, restoredChat.id, 10).items,
-      ).toHaveLength(1);
+      expect(repositories.contacts.listByAccount(restoredAccount.id)).toHaveLength(0);
+      expect(repositories.chats.listByAccount(restoredAccount.id)).toHaveLength(0);
     }
   });
 

@@ -2,45 +2,50 @@
 
 ## Current milestone
 
-M02 — SQLite Persistence
+M03 — Messaging Provider Abstraction
 
 ## Completed
 
 - M00 secure Electron, React, strict TypeScript, Vite, testing, and packaging foundation.
 - M01 provider-independent domain models and main-process multi-account foundation.
-- SQLite initialization in Electron's platform-specific application data directory.
-- Forward-only transactional migration runner with two versioned initial migrations.
-- Strict account, contact, chat, and message tables with foreign keys and projection indexes.
-- Application-owned typed repository interfaces and SQLite implementations.
-- Account, chat, contact, and message persistence with domain-to-row mapping.
-- Transaction runner with typed `DatabaseError` wrapping and rollback behavior.
-- Account-scoped composite identifiers and remote-ID uniqueness.
-- Idempotent message insertion using `(account_id, remote_id)` conflict handling.
-- Bounded keyset message pagination using `(sent_at, id)` cursors.
-- Transactional mock account/contact/chat/message seeding on a fresh database only.
-- Account restoration from SQLite before mock sessions connect on application startup.
-- Temporary-file integration coverage for creation, upgrade, reopen, isolation, deduplication,
-  rollback, and pagination.
+- M02 versioned SQLite persistence and account-scoped repositories.
+- Application-owned `MessagingProvider`, `MessagingSession`, `MessagingEvent`,
+  `ProviderConnectionState`, `ProviderChat`, and `ProviderMessage` contracts.
+- One independently mutable provider session per account with no global transport connection state.
+- `ProviderAccountSession` mapping from provider lifecycle events into `AccountManager` state.
+- `MockMessagingProvider` pairing-code, connect, disconnect, logout, reconnect, failure, history,
+  incoming-message, and outgoing-text simulations.
+- `MessagingService` account validation and transactional chat/message projection into SQLite.
+- Deterministic account-scoped provider identity mapping with remote-message deduplication.
+- Projection notifications published only after successful database transactions.
+- Typed chat/message IPC queries and projection-change subscription through the narrow preload API.
+- Zustand messaging projection state with stale-request protection during account switching.
+- Read-only React conversation list and message timeline backed by SQLite DTOs.
+- Startup now seeds accounts only; visible chats/messages originate from mock provider events.
+- Offline provider and integration coverage for lifecycle, event flow, persistence, deduplication,
+  renderer DTOs, and simultaneous account isolation.
 
 ## In progress
 
-- Nothing; M02 is complete.
+- Nothing; M03 is complete.
 
 ## Not implemented
 
-- Formal messaging provider abstraction and mock end-to-end messaging flow (M03).
-- WhatsApp/Baileys connectivity, pairing, credentials, synchronization, or reconnect behavior.
-- Persistence repositories for attachments, reactions, receipts, sync state, or settings; their
-  schema is deferred until the milestone that defines their behavior.
-- Renderer chat/message projections; persisted M02 fixtures are intentionally not displayed yet.
+- Baileys transport, real QR rendering/pairing, auth credentials, or WhatsApp connectivity (M04).
+- Real multi-account add/remove/logout UI (M05).
+- Production conversation synchronization and conversation-list UX (M06).
+- Real message history synchronization and pagination UI (M07).
+- Composer or user-facing message sending; mock outgoing sends are exercised below the application
+  boundary only (M08).
+- Media, reactions, receipts, presence, notifications, and settings.
 - Playwright tests; these remain deferred until richer interactive flows exist.
 
 ## Known issues
 
-- Account connection state is still represented by in-memory mock sessions and reconnects on every
-  launch; only normalized account/chat/contact/message data is durable.
-- The fresh-database mock seed returns if any account already exists; production account creation
-  and removal behavior will replace this development bootstrap in later milestones.
+- Existing M02 development databases retain their old seed message alongside the new provider event;
+  it is preserved intentionally rather than silently deleting local data.
+- Provider pairing codes and lifecycle controls are test-facing; the real diagnostics/pairing surface
+  belongs to M04/M05.
 - Native installers have not been produced or validated on Windows or Linux.
 - Application signing/notarization and custom application artwork are not configured.
 - `npm audit` reports eight moderate findings in electron-builder's development-only packaging
@@ -62,6 +67,8 @@ M02 — SQLite Persistence
 - ADR-009: Synchronous SQLite is isolated behind application repository ports.
 - ADR-010: Database schema changes use forward-only transactional migrations.
 - ADR-011: Persistence uses account-composite identity, remote deduplication, and keyset pagination.
+- ADR-012: Messaging transports implement an application-owned, account-scoped provider contract.
+- ADR-013: Provider events commit to SQLite before renderer projection notifications are published.
 
 ## Verification
 
@@ -69,16 +76,16 @@ M02 — SQLite Persistence
 - `npm run format:check` — passed.
 - `npm run lint` — passed with zero warnings.
 - `npm run typecheck` — passed.
-- `npm run test:unit` — 4 files and 8 tests passed.
-- `npm run test:integration` — 2 files and 10 tests passed.
-- `npm test` — 6 files and 18 tests passed after production packaging.
+- `npm run test:unit` — 5 files and 10 tests passed.
+- `npm run test:integration` — 3 files and 12 tests passed.
+- `npm test` — 8 files and 22 tests passed after production packaging.
 - `npm run build` — passed for the main, preload, and renderer bundles.
-- `npm run start` — launched successfully with the SQLite native binding; a second launch reopened
-  the existing database without error.
-- `npm run package` — produced the unsigned macOS arm64 application bundle and rebuilt
-  `better-sqlite3` for Electron successfully.
+- `npm run start` — launched the real Electron runtime after the account-only seed correction with
+  no main-process, preload, SQLite, or renderer errors reported.
+- `npm run package` — produced the unsigned macOS arm64 bundle and rebuilt `better-sqlite3` for
+  Electron successfully.
 - `npm audit --omit=dev --json` — zero production vulnerabilities.
 
 ## Recommended next milestone
 
-M03 — Messaging Provider Abstraction
+M04 — Baileys Transport Spike

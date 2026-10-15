@@ -1,9 +1,15 @@
 import { join } from 'node:path';
 import { electronApp, is, optimizer } from '@electron-toolkit/utils';
 import { app, BrowserWindow, shell } from 'electron';
+import { MessagingService } from '../application/messaging/messaging-service';
+import { MessagingView } from '../application/messaging/messaging-view';
 import { createRepositories, SqliteDatabase } from '../infrastructure/database';
 import { registerIpcHandlers } from './ipc';
-import { createMockAccountManager, seedMockProjection } from './mock-accounts';
+import {
+  createMockAccountManager,
+  createMockMessagingProvider,
+  seedMockAccounts,
+} from './mock-accounts';
 import { createWindowOptions } from './window-options';
 
 function createMainWindow(): BrowserWindow {
@@ -32,11 +38,22 @@ void app.whenReady().then(async () => {
     join(app.getPath('userData'), 'database', 'multiomon.sqlite'),
   );
   const repositories = createRepositories(database);
-  seedMockProjection(database, repositories);
-  const accountManager = await createMockAccountManager(repositories.accounts);
-  const unregisterIpcHandlers = registerIpcHandlers(accountManager);
+  seedMockAccounts(database, repositories);
+  const messagingService = new MessagingService(
+    createMockMessagingProvider(),
+    database,
+    repositories,
+  );
+  const messagingView = new MessagingView(repositories.chats, repositories.messages);
+  const accountManager = await createMockAccountManager(repositories.accounts, messagingService);
+  const unregisterIpcHandlers = registerIpcHandlers(
+    accountManager,
+    messagingService,
+    messagingView,
+  );
   app.once('before-quit', () => {
     unregisterIpcHandlers();
+    messagingService.dispose();
     database.close();
   });
 

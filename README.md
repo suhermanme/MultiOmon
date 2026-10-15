@@ -4,14 +4,14 @@ MultiOmon is an unofficial, personal-use, cross-platform desktop client foundati
 multiple WhatsApp accounts. It targets macOS, Windows, and Linux.
 
 > This project is not affiliated with, endorsed by, or associated with WhatsApp or Meta. The
-> current build does not connect to WhatsApp; transport work is intentionally deferred.
+> current build uses a deterministic mock messaging provider and does not connect to WhatsApp.
 
 ## Current milestone
 
-M02 adds a durable SQLite projection behind typed repository interfaces. Versioned migrations,
-transactional startup seeding, account-scoped identity, idempotent message ingest, and cursor-based
-message pagination are implemented. Three mock accounts and their local chat/contact/message data
-survive application restarts. WhatsApp connectivity is not implemented yet.
+M03 adds a provider-neutral messaging boundary and an account-isolated mock provider. Pairing,
+connection, reconnect, logout, incoming messages, and outgoing messages can be simulated without a
+live WhatsApp account. Normalized mock events flow through the application layer into SQLite, then
+reach a read-only chat/message projection in React through the typed preload bridge.
 
 Local application data is stored below Electron's platform-specific `userData` directory in
 `database/multiomon.sqlite`. Large media will use filesystem storage in a later milestone rather
