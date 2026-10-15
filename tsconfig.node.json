@@ -23,6 +23,8 @@
     "vitest.config.mts",
     "src/main/**/*.ts",
     "src/preload/**/*.ts",
+    "src/application/**/*.ts",
+    "src/domain/**/*.ts",
     "src/renderer/**/*.ts",
     "src/renderer/**/*.tsx",
     "src/shared/**/*.ts",

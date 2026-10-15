@@ -3,14 +3,15 @@
 MultiOmon is an unofficial, personal-use, cross-platform desktop client foundation for managing
 multiple WhatsApp accounts. It targets macOS, Windows, and Linux.
 
-> This project is not affiliated with, endorsed by, or associated with WhatsApp or Meta. M00 does
-> not connect to WhatsApp; transport work is intentionally deferred to later milestones.
+> This project is not affiliated with, endorsed by, or associated with WhatsApp or Meta. The
+> current build does not connect to WhatsApp; transport work is intentionally deferred.
 
 ## Current milestone
 
-M00 establishes a secure Electron + React + TypeScript + Vite application shell. It includes a
-typed preload bridge, strict process separation, unit/integration tests, linting, formatting, and
-electron-builder packaging configuration.
+M01 establishes provider-independent messaging domain models and a main-process-owned
+multi-account foundation. Three in-memory mock accounts connect independently and can be switched
+from the account rail without disconnecting one another. SQLite and WhatsApp connectivity are not
+implemented yet.
 
 ## Development
 

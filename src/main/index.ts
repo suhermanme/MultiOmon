@@ -2,6 +2,7 @@ import { join } from 'node:path';
 import { electronApp, is, optimizer } from '@electron-toolkit/utils';
 import { app, BrowserWindow, shell } from 'electron';
 import { registerIpcHandlers } from './ipc';
+import { createMockAccountManager } from './mock-accounts';
 import { createWindowOptions } from './window-options';
 
 function createMainWindow(): BrowserWindow {
@@ -24,9 +25,11 @@ function createMainWindow(): BrowserWindow {
   return mainWindow;
 }
 
-void app.whenReady().then(() => {
+void app.whenReady().then(async () => {
   electronApp.setAppUserModelId('com.multiomon.desktop');
-  registerIpcHandlers();
+  const accountManager = await createMockAccountManager();
+  const unregisterIpcHandlers = registerIpcHandlers(accountManager);
+  app.once('before-quit', unregisterIpcHandlers);
 
   app.on('browser-window-created', (_event, window) => {
     optimizer.watchWindowShortcuts(window);
