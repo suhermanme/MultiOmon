@@ -1,0 +1,18 @@
+node_modules/
+out/
+dist/
+coverage/
+playwright-report/
+test-results/
+*.log
+*.tsbuildinfo
+.DS_Store
+.env
+.env.*
+!.env.example
+
+# Local runtime data and credentials must never be committed.
+.multiomon-data/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
