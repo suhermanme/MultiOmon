@@ -2,7 +2,7 @@
 
 ## Current milestone
 
-M03 — Messaging Provider Abstraction
+M04 — Baileys Transport Spike (in progress)
 
 ## Completed
 
@@ -27,11 +27,23 @@ M03 — Messaging Provider Abstraction
 
 ## In progress
 
-- Nothing; M03 is complete.
+- M04 Baileys transport provider abstraction implementation:
+  - `WhatsappMessagingProvider` and `WhatsappMessagingSession` created in `src/infrastructure/messaging/whatsapp/`
+  - Provider implements the application-owned `MessagingProvider` contract (ADR-012)
+  - Session bridges Baileys events to MultiOmon `MessagingEvent` types, mapping connection states to `ProviderConnectionState`
+  - Auth state persisted per-account via `useMultiFileAuthState` in `userData/authInfo/<accountId>/`
+  - Pairing code requested through Baileys `requestPairingCode(phoneNumber)`; the resulting
+    `pairing.code` event is emitted but no IPC channel or pairing UI surfaces it yet
+  - Main process wiring added: `WHATSAPP_PROVIDER=1` env var switches from mock to WhatsApp provider
+  - Session typing rewritten without `any`; Baileys 6.7.24 API corrections applied
+    (`requestPairingCode`, `auth: AuthenticationState`, single `WebMessageInfo` return value, no
+    `socket.chats` store, `ev.on`/`ev.removeAllListeners(event)`, Boom `output.statusCode` for 401)
+  - Unit and integration tests for the WhatsApp provider fixed; both suites pass
 
 ## Not implemented
 
-- Baileys transport, real QR rendering/pairing, auth credentials, or WhatsApp connectivity (M04).
+- Real WhatsApp connection lifecycle: full Baileys event subscription, chat history sync on connect,
+  auto-reconnect with exponential backoff, and media message support (M04).
 - Real multi-account add/remove/logout UI (M05).
 - Production conversation synchronization and conversation-list UX (M06).
 - Real message history synchronization and pagination UI (M07).
@@ -53,6 +65,11 @@ M03 — Messaging Provider Abstraction
   electron-builder 26.15.3 remains pinned pending an upstream fix.
 - The renderer CSP permits WebSocket connections in development for Vite HMR; production output
   should receive a stricter environment-specific CSP during security hardening.
+- `WHATSAPP_PROVIDER=1` reaches `AccountManager.connectAll()` during startup, so every seeded account
+  opens a live Baileys socket and a real unpaired device-registration handshake before any pairing UI
+  exists; a dropped connection re-triggers `connect()` from an uncancellable 5-second timer.
+- `logout()` deletes the per-account auth directory but keeps the in-memory `AuthenticationState`, so a
+  later `connect()` in the same process can reuse stale credentials.
 
 ## Architecture decisions
 
@@ -73,19 +90,20 @@ M03 — Messaging Provider Abstraction
 ## Verification
 
 - `npm run format` — passed.
-- `npm run format:check` — passed.
-- `npm run lint` — passed with zero warnings.
-- `npm run typecheck` — passed.
-- `npm run test:unit` — 5 files and 10 tests passed.
-- `npm run test:integration` — 3 files and 12 tests passed.
-- `npm test` — 8 files and 22 tests passed after production packaging.
-- `npm run build` — passed for the main, preload, and renderer bundles.
-- `npm run start` — launched the real Electron runtime after the account-only seed correction with
-  no main-process, preload, SQLite, or renderer errors reported.
-- `npm run package` — produced the unsigned macOS arm64 bundle and rebuilt `better-sqlite3` for
-  Electron successfully.
-- `npm audit --omit=dev --json` — zero production vulnerabilities.
+- `npm run format:check` — all matched files use Prettier code style.
+- `npm run lint` — passed with zero errors and zero warnings.
+- `npm run typecheck` — passed for the node and web projects.
+- `npm run test:unit` — 6 files and 23 tests passed.
+- `npm run test:integration` — 4 files and 15 tests passed.
+- `npm test` — 10 files and 38 tests passed; no test performs network access.
+- `npm run build` — passed for the main, preload, and renderer bundles. The lazy
+  `await import('@whiskeysockets/baileys')` survives bundling as a real dynamic `import()` and
+  Baileys stays outside the main bundle.
+- `npm run start` — launched the real Electron runtime in mock mode and in `WHATSAPP_PROVIDER=1`
+  mode; the WhatsApp mode opened live Baileys sockets for each seeded account (see Known issues).
+- `npm run package` and `npm audit --omit=dev --json` — last verified at M03 and not re-run after the
+  Baileys dependency was added.
 
 ## Recommended next milestone
 
-M04 — Baileys Transport Spike
+M04 — Complete Baileys Transport Spike (pairing code flow, live event normalization, media message support)

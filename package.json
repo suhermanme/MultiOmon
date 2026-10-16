@@ -22,6 +22,7 @@
     "dist": "npm run build && electron-builder"
   },
   "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.14",
     "better-sqlite3": "^13.0.3",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",

@@ -8,6 +8,7 @@ import { registerIpcHandlers } from './ipc';
 import {
   createMockAccountManager,
   createMockMessagingProvider,
+  createWhatsappMessagingProvider,
   seedMockAccounts,
 } from './mock-accounts';
 import { createWindowOptions } from './window-options';
@@ -39,11 +40,13 @@ void app.whenReady().then(async () => {
   );
   const repositories = createRepositories(database);
   seedMockAccounts(database, repositories);
-  const messagingService = new MessagingService(
-    createMockMessagingProvider(),
-    database,
-    repositories,
-  );
+
+  const useWhatsapp = process.env.WHATSAPP_PROVIDER === '1';
+  const messagingProvider = useWhatsapp
+    ? createWhatsappMessagingProvider(join(app.getPath('userData'), 'authInfo'))
+    : createMockMessagingProvider();
+
+  const messagingService = new MessagingService(messagingProvider, database, repositories);
   const messagingView = new MessagingView(repositories.chats, repositories.messages);
   const accountManager = await createMockAccountManager(repositories.accounts, messagingService);
   const unregisterIpcHandlers = registerIpcHandlers(

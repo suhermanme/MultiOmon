@@ -3,8 +3,9 @@
 ## Scope
 
 M03 provides the desktop shell, provider-independent messaging domain models, account-scoped
-messaging sessions, a durable SQLite projection, and a complete mock-provider flow. WhatsApp
-connectivity remains intentionally absent.
+messaging sessions, a durable SQLite projection, and a complete mock-provider flow. M04 adds an
+opt-in Baileys transport behind the same provider contract; live WhatsApp connectivity stays behind
+`WHATSAPP_PROVIDER=1` and is never exercised by the test suite.
 
 ## Process boundaries
 
@@ -116,8 +117,9 @@ M08 concern even though the mock session can exercise its outgoing-message path 
 
 The mock implementation supports pairing codes, pairing completion, connect/disconnect, incoming
 and outgoing text events, reconnect, logout, initial history replay, and injected failures. It is
-deterministic and requires no network or WhatsApp account. A future Baileys implementation must
-implement the same application-owned interfaces below `src/infrastructure/messaging/whatsapp`.
+deterministic and requires no network or WhatsApp account. The Baileys implementation implements the
+same application-owned interfaces below `src/infrastructure/messaging/whatsapp` and is the only place
+allowed to import `@whiskeysockets/baileys` (ADR-012).
 
 ## Durable local projection
 

@@ -7,6 +7,7 @@ import type {
 } from '../application/ports/repositories';
 import { createAccountId, type Account } from '../domain';
 import { MockMessagingProvider } from '../infrastructure/messaging/mock';
+import { WhatsappMessagingProvider } from '../infrastructure/messaging/whatsapp';
 
 const mockAccounts: readonly Account[] = [
   { id: createAccountId('mock-personal'), displayName: 'Personal', createdAt: 1 },
@@ -68,5 +69,12 @@ export function createMockMessagingProvider(): MockMessagingProvider {
         ],
       },
     };
+  });
+}
+
+export function createWhatsappMessagingProvider(authDir: string): WhatsappMessagingProvider {
+  return new WhatsappMessagingProvider(authDir, () => {
+    const phoneNumber = process.env.WA_PHONE_NUMBER;
+    return phoneNumber !== undefined ? { phoneNumber } : {};
   });
 }
