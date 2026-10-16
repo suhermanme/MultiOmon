@@ -24,6 +24,10 @@ body {
   overflow: hidden;
 }
 
+button {
+  border: 0;
+}
+
 button,
 input,
 textarea {
@@ -37,6 +41,7 @@ button:focus-visible {
 
 .app-shell {
   display: grid;
+  height: 100vh;
   min-height: 100vh;
   grid-template-rows: 54px 1fr;
   background: #111916;
@@ -83,56 +88,70 @@ button:focus-visible {
   -webkit-app-region: no-drag;
 }
 
-.bridge-pill > span {
+.bridge-dot {
   width: 6px;
   height: 6px;
   border-radius: 50%;
   background: #d5ab57;
 }
 
-.bridge-ready > span {
+.bridge-ready > .bridge-dot {
   background: #68e9b8;
   box-shadow: 0 0 0 3px rgb(104 233 184 / 10%);
 }
 
-.bridge-failed > span {
+.bridge-failed > .bridge-dot {
   background: #ef7777;
+}
+
+.provider-label {
+  color: #b6c8c1;
+  font-size: inherit;
+}
+
+.bridge-separator {
+  color: #50655e;
 }
 
 .workspace {
   display: grid;
   min-height: 0;
-  grid-template-columns: 82px minmax(290px, 360px) 1fr;
+  overflow: hidden;
+  grid-template-columns: minmax(180px, 220px) minmax(260px, 360px) minmax(320px, 1fr);
 }
 
 .account-rail {
+  position: relative;
   display: flex;
   min-height: 0;
   flex-direction: column;
-  align-items: center;
-  padding: 20px 12px;
+  padding: 18px 14px;
   border-right: 1px solid rgb(255 255 255 / 7%);
   background: #0c1311;
 }
 
 .account-list {
   display: flex;
+  min-height: 0;
   flex-direction: column;
-  gap: 15px;
+  gap: 7px;
+  overflow-y: auto;
 }
 
-.account-button,
-.add-account {
+.account-button {
   position: relative;
   display: grid;
-  width: 48px;
-  height: 48px;
-  padding: 0;
-  place-items: center;
+  width: 100%;
+  min-height: 54px;
+  grid-template-columns: 42px minmax(0, 1fr) 10px;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 9px;
   border: 0;
-  border-radius: 16px;
+  border-radius: 14px;
   color: #c8d6d1;
   background: transparent;
+  text-align: left;
   cursor: pointer;
   transition:
     background-color 120ms ease,
@@ -150,7 +169,7 @@ button:focus-visible {
 
 .account-button-active::before {
   position: absolute;
-  left: -12px;
+  left: -14px;
   width: 3px;
   height: 25px;
   border-radius: 0 4px 4px 0;
@@ -180,14 +199,34 @@ button:focus-visible {
 }
 
 .account-status {
-  position: absolute;
-  right: 3px;
-  bottom: 3px;
-  width: 10px;
-  height: 10px;
-  border: 2px solid #0c1311;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   background: #89968f;
+}
+
+.account-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.account-copy strong,
+.account-copy span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-copy strong {
+  color: inherit;
+  font-size: 12px;
+}
+
+.account-copy span {
+  color: #71877f;
+  font-size: 9px;
 }
 
 .status-connected {
@@ -320,16 +359,207 @@ button:focus-visible {
   background: #ed7070;
 }
 
-.add-account {
+.add-account-trigger {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
   margin-top: auto;
-  border: 1px dashed rgb(255 255 255 / 14%);
-  color: #6f827b;
+  padding: 10px 12px;
+  border: 1px solid rgb(104 233 184 / 16%);
+  border-radius: 11px;
+  color: #9cdcc4;
+  background: rgb(104 233 184 / 6%);
+  font-size: 11px;
+  font-weight: 750;
+  cursor: pointer;
+  transition:
+    border-color 120ms ease,
+    background-color 120ms ease;
+}
+
+.add-account-trigger span {
+  display: grid;
+  width: 18px;
+  height: 18px;
+  place-items: center;
+  border-radius: 6px;
+  color: #0a3326;
+  background: #68e9b8;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.add-account-trigger:hover:not(:disabled) {
+  border-color: rgb(104 233 184 / 32%);
+  background: rgb(104 233 184 / 11%);
+}
+
+.add-account-trigger:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.dialog-backdrop {
+  position: fixed;
+  z-index: 100;
+  display: grid;
+  padding: 24px;
+  place-items: center;
+  background: rgb(3 8 7 / 68%);
+  backdrop-filter: blur(8px);
+  inset: 0;
+}
+
+.account-dialog {
+  width: min(430px, 100%);
+  padding: 24px;
+  border: 1px solid rgb(255 255 255 / 10%);
+  border-radius: 20px;
+  background: linear-gradient(155deg, #1b2925, #111a17 68%);
+  box-shadow:
+    0 24px 80px rgb(0 0 0 / 42%),
+    0 1px 0 rgb(255 255 255 / 5%) inset;
+  animation: dialog-enter 160ms ease-out;
+}
+
+@keyframes dialog-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.dialog-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.dialog-header h2 {
+  margin-top: 6px;
+  color: #e8f1ed;
   font-size: 22px;
-  cursor: not-allowed;
+  letter-spacing: -0.035em;
+}
+
+.dialog-close {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 10px;
+  color: #82978f;
+  background: rgb(255 255 255 / 5%);
+  font-size: 21px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.dialog-close:hover:not(:disabled) {
+  color: #dbe8e3;
+  background: rgb(255 255 255 / 9%);
+}
+
+.dialog-intro {
+  margin-top: 13px;
+  color: #82978f;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.add-account-form {
+  display: grid;
+  gap: 9px;
+  margin-top: 22px;
+}
+
+.add-account-form label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: #8ea29b;
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.add-account-form label span {
+  color: #5f756d;
+  font-size: 8px;
+  letter-spacing: 0.06em;
+}
+
+.text-input {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid rgb(255 255 255 / 10%);
+  border-radius: 9px;
+  color: #dce7e2;
+  background: rgb(255 255 255 / 4%);
+  font-size: 13px;
+}
+
+.text-input:focus-visible {
+  border-color: rgb(104 233 184 / 45%);
+  outline: 2px solid rgb(104 233 184 / 20%);
+}
+
+.add-account-submit {
+  min-width: 126px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  color: #082b20;
+  background: #68e9b8;
+  font-size: 11px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.add-account-submit:disabled {
+  color: #718078;
+  background: rgb(255 255 255 / 7%);
+  cursor: default;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 13px;
+  padding-top: 16px;
+  border-top: 1px solid rgb(255 255 255 / 7%);
+}
+
+.dialog-cancel {
+  padding: 10px 14px;
+  border-radius: 10px;
+  color: #91a49d;
+  background: transparent;
+  font-size: 11px;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.dialog-cancel:hover:not(:disabled) {
+  color: #d5e1dc;
+  background: rgb(255 255 255 / 5%);
 }
 
 .conversation-list {
   display: flex;
+  min-height: 0;
   min-width: 0;
   flex-direction: column;
   border-right: 1px solid rgb(255 255 255 / 7%);
@@ -344,6 +574,119 @@ button:focus-visible {
   gap: 18px;
   padding: 20px 22px;
   border-bottom: 1px solid rgb(255 255 255 / 6%);
+}
+
+.account-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px 14px;
+  border-bottom: 1px solid rgb(255 255 255 / 6%);
+}
+
+.action-button {
+  padding: 7px 10px;
+  border: 1px solid rgb(255 255 255 / 9%);
+  border-radius: 8px;
+  color: #afc0ba;
+  background: rgb(255 255 255 / 4%);
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.action-button:hover:not(:disabled) {
+  border-color: rgb(104 233 184 / 24%);
+  color: #a9efd5;
+  background: rgb(104 233 184 / 8%);
+}
+
+.action-button:disabled {
+  opacity: 0.42;
+  cursor: default;
+}
+
+.action-danger {
+  color: #e79a9a;
+}
+
+.action-ghost {
+  color: #879b94;
+  background: transparent;
+}
+
+.remove-confirm {
+  display: flex;
+  flex-basis: 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.remove-confirm-label {
+  margin-right: auto;
+  color: #d6aaa8;
+  font-size: 10px;
+}
+
+.pairing-panel {
+  display: grid;
+  gap: 12px;
+  margin: 12px 14px 0;
+  padding: 14px;
+  border: 1px solid rgb(104 233 184 / 18%);
+  border-radius: 12px;
+  background: rgb(104 233 184 / 5%);
+  max-height: min(360px, 42vh);
+  overflow-y: auto;
+}
+
+.pairing-title {
+  color: #9ce8cc;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.pairing-qr-block,
+.pairing-code-block {
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.pairing-qr {
+  display: block;
+  width: min(100%, 220px);
+  height: auto;
+  aspect-ratio: 1;
+  border-radius: 9px;
+  background: #fff;
+}
+
+.pairing-qr-pending {
+  display: grid;
+  place-items: center;
+  color: #789087;
+  font-size: 10px;
+}
+
+.pairing-qr-block p,
+.pairing-code-block p,
+.pairing-expiry {
+  color: #788e86;
+  font-size: 10px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.pairing-code {
+  overflow-wrap: anywhere;
+  color: #baf3df;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 18px;
+  letter-spacing: 0.08em;
 }
 
 .section-label {
@@ -429,7 +772,9 @@ h1 {
 
 .conversation-view {
   display: grid;
+  min-height: 0;
   min-width: 0;
+  overflow: hidden;
   place-items: center;
   background: radial-gradient(circle at 50% 42%, rgb(72 179 138 / 8%), transparent 27rem), #101815;
 }
@@ -479,6 +824,78 @@ h1 {
 .message-bubble p {
   font-size: 13px;
   line-height: 1.5;
+}
+
+.date-separator {
+  align-self: center;
+  margin: 7px 0;
+  padding: 5px 10px;
+  border: 1px solid rgb(255 255 255 / 6%);
+  border-radius: 999px;
+  color: #71877f;
+  background: rgb(12 19 17 / 70%);
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+}
+
+.message-sender {
+  display: block;
+  margin-bottom: 4px;
+  color: #7cddba;
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.message-time {
+  display: block;
+  margin-top: 5px;
+  color: #688078;
+  font-size: 9px;
+  text-align: right;
+}
+
+.message-media {
+  display: grid;
+  gap: 7px;
+  min-width: min(260px, 55vw);
+}
+
+.media-preview {
+  display: block;
+  width: min(100%, 440px);
+  max-height: 360px;
+  border-radius: 9px;
+  object-fit: contain;
+  background: rgb(0 0 0 / 20%);
+}
+
+.media-audio {
+  width: min(100%, 340px);
+}
+
+.media-download {
+  justify-self: start;
+  padding: 8px 11px;
+  border: 1px solid rgb(104 233 184 / 20%);
+  border-radius: 8px;
+  color: #a5ead1;
+  background: rgb(104 233 184 / 7%);
+  font-size: 10px;
+  font-weight: 750;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.media-download:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.media-meta {
+  color: #6e847c;
+  font-size: 9px;
+  text-transform: capitalize;
 }
 
 .message-kind {
@@ -576,11 +993,11 @@ h1 {
 
 @media (max-width: 900px) {
   .workspace {
-    grid-template-columns: 74px 290px 1fr;
+    grid-template-columns: 180px 260px minmax(320px, 1fr);
   }
 
   .account-rail {
-    padding-inline: 9px;
+    padding-inline: 11px;
   }
 }
 
@@ -616,6 +1033,62 @@ h1 {
     background: #fff;
   }
 
+  .text-input {
+    border-color: rgb(17 65 49 / 14%);
+    color: #23423a;
+    background: #fff;
+  }
+
+  .add-account-submit,
+  .add-account-trigger span {
+    color: #f5fffb;
+    background: #16875e;
+  }
+
+  .account-actions {
+    border-color: rgb(17 65 49 / 8%);
+  }
+
+  .add-account-trigger {
+    border-color: rgb(19 137 94 / 18%);
+    color: #337860;
+    background: rgb(19 137 94 / 6%);
+  }
+
+  .dialog-backdrop {
+    background: rgb(18 35 29 / 32%);
+  }
+
+  .account-dialog {
+    border-color: rgb(17 65 49 / 12%);
+    background: linear-gradient(155deg, #fff, #f2f7f4 70%);
+    box-shadow: 0 24px 80px rgb(25 62 49 / 20%);
+  }
+
+  .dialog-header h2 {
+    color: #18342c;
+  }
+
+  .dialog-close {
+    color: #668078;
+    background: rgb(17 65 49 / 6%);
+  }
+
+  .dialog-actions {
+    border-color: rgb(17 65 49 / 9%);
+  }
+
+  .action-button {
+    border-color: rgb(17 65 49 / 12%);
+    color: #42675a;
+    background: rgb(17 65 49 / 4%);
+  }
+
+  .pairing-panel {
+    border-color: rgb(19 137 94 / 18%);
+    background: rgb(19 137 94 / 5%);
+  }
+
   .load-more,
   .load-older {
     border-color: rgb(19 137 94 / 30%);
@@ -636,6 +1109,17 @@ h1 {
   .message-bubble {
     border-color: rgb(17 65 49 / 7%);
     background: #fff;
+  }
+
+  .date-separator {
+    border-color: rgb(17 65 49 / 8%);
+    background: rgb(255 255 255 / 70%);
+  }
+
+  .media-download {
+    border-color: rgb(19 137 94 / 22%);
+    color: #176c4f;
+    background: rgb(19 137 94 / 7%);
   }
 
   .message-outgoing {

@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { RepositoryBundle } from '../../src/application/ports/repositories';
 import {
   createAccountId,
+  createAttachmentId,
   createChatId,
   createContactId,
   createMessageId,
@@ -76,12 +77,12 @@ describe('SQLite persistence', () => {
   });
 
   it('creates and reapplies versioned migrations safely', () => {
-    expect(getAppliedMigrationVersions(database.connection)).toEqual([1, 2, 3, 4]);
+    expect(getAppliedMigrationVersions(database.connection)).toEqual([1, 2, 3, 4, 5, 6]);
 
     database.close();
     database = SqliteDatabase.open(filePath);
 
-    expect(getAppliedMigrationVersions(database.connection)).toEqual([1, 2, 3, 4]);
+    expect(getAppliedMigrationVersions(database.connection)).toEqual([1, 2, 3, 4, 5, 6]);
   });
 
   it('upgrades an existing version-one database without destroying its data', () => {
@@ -103,15 +104,68 @@ describe('SQLite persistence', () => {
         'INSERT INTO accounts (id, display_name, created_at, updated_at) VALUES (?, ?, ?, ?)',
       )
       .run('legacy-account', 'Legacy account', 1, 1);
+    legacyConnection
+      .prepare(
+        `INSERT INTO chats
+          (account_id, id, remote_id, kind, title, unread_count, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run('legacy-account', 'legacy-chat', 'legacy-remote', 'direct', 'Legacy chat', 0, 1);
+    legacyConnection
+      .prepare(
+        `INSERT INTO chats
+          (account_id, id, remote_id, kind, title, unread_count, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run('legacy-account', 'control-chat', '180900000000001', 'direct', '180900000000001', 0, 1);
+    const insertLegacyMessage = legacyConnection.prepare(
+      `INSERT INTO messages
+        (account_id, id, chat_id, remote_id, direction, sent_at, content_kind, text_content)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    insertLegacyMessage.run(
+      'legacy-account',
+      'control-placeholder',
+      'control-chat',
+      'control-placeholder',
+      'outgoing',
+      1,
+      'system',
+      '[Unsupported message type]',
+    );
+    insertLegacyMessage.run(
+      'legacy-account',
+      'real-message',
+      'legacy-chat',
+      'real-message',
+      'incoming',
+      2,
+      'text',
+      'Keep me',
+    );
     legacyConnection.close();
 
     const upgraded = SqliteDatabase.open(legacyPath);
     const upgradedRepositories = createRepositories(upgraded);
 
-    expect(getAppliedMigrationVersions(upgraded.connection)).toEqual([1, 2, 3, 4]);
+    expect(getAppliedMigrationVersions(upgraded.connection)).toEqual([1, 2, 3, 4, 5, 6]);
     const legacyAccount = upgradedRepositories.accounts.list()[0];
     expect(legacyAccount?.displayName).toBe('Legacy account');
     expect(legacyAccount?.phoneNumber).toBeUndefined();
+    expect(
+      upgradedRepositories.chats.getById(
+        createAccountId('legacy-account'),
+        createChatId('control-chat'),
+      ),
+    ).toMatchObject({
+      remoteId: '180900000000001@lid',
+      title: 'WhatsApp contact',
+    });
+    expect(
+      upgraded.connection
+        .prepare('SELECT id FROM messages WHERE account_id = ? ORDER BY id')
+        .all('legacy-account'),
+    ).toEqual([{ id: 'real-message' }]);
     upgraded.close();
   });
 
@@ -204,6 +258,41 @@ describe('SQLite persistence', () => {
     expect(repositories.messages.insert(savedMessage)).toBe(true);
     expect(repositories.messages.insert(savedMessage)).toBe(false);
     expect(repositories.messages.listPage(savedAccount.id, savedChat.id, 20).items).toHaveLength(1);
+  });
+
+  it('persists attachment metadata separately from message rows', () => {
+    const savedAccount = account('media');
+    const savedChat = chat(savedAccount);
+    const messageId = createMessageId('media-message');
+    const attachmentId = createAttachmentId('media-attachment');
+    repositories.accounts.save(savedAccount);
+    repositories.chats.save(savedChat);
+    repositories.messages.insert({
+      ...message(savedAccount, savedChat, messageId, 'remote-media', 100),
+      id: messageId,
+      content: { kind: 'media', attachmentId, caption: 'A photo' },
+    });
+    repositories.attachments.save({
+      id: attachmentId,
+      accountId: savedAccount.id,
+      messageId,
+      kind: 'image',
+      mediaType: 'image/jpeg',
+      fileName: 'photo.jpg',
+      sizeBytes: 42,
+      remoteReference: 'provider-ref',
+    });
+
+    expect(repositories.attachments.getById(savedAccount.id, attachmentId)).toEqual({
+      id: attachmentId,
+      accountId: savedAccount.id,
+      messageId,
+      kind: 'image',
+      mediaType: 'image/jpeg',
+      fileName: 'photo.jpg',
+      sizeBytes: 42,
+      remoteReference: 'provider-ref',
+    });
   });
 
   it('paginates deterministically without gaps or duplicates', () => {

@@ -4,7 +4,7 @@ import { toAccountSnapshotDto } from '../application/accounts/account-view';
 import type { AccountProvisioningService } from '../application/accounts/account-provisioning';
 import type { MessagingService } from '../application/messaging/messaging-service';
 import { toPairingUpdateDto, type MessagingView } from '../application/messaging/messaging-view';
-import { createAccountId, createChatId, type AccountId } from '../domain';
+import { createAccountId, createAttachmentId, createChatId, type AccountId } from '../domain';
 import {
   IPC_CHANNELS,
   type AccountConnectionStateDto,
@@ -125,6 +125,7 @@ export function registerIpcHandlers(services: IpcServices): () => void {
   ipcMain.handle(IPC_CHANNELS.runtimeInfo, (): RuntimeInfo => {
     return {
       platform: process.platform,
+      messagingProvider: process.env.WHATSAPP_PROVIDER === '1' ? 'whatsapp' : 'mock',
       versions: {
         chrome: process.versions.chrome,
         electron: process.versions.electron,
@@ -183,6 +184,34 @@ export function registerIpcHandlers(services: IpcServices): () => void {
     },
   );
 
+  ipcMain.handle(
+    IPC_CHANNELS.messageHistory,
+    async (_event, accountId: unknown, chatId: unknown) => {
+      if (typeof chatId !== 'string') throw new TypeError('Chat ID must be a string');
+      await messagingService.requestHistory(readAccountId(accountId), createChatId(chatId));
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.mediaDownload,
+    async (_event, accountId: unknown, attachmentId: unknown) => {
+      if (typeof attachmentId !== 'string') {
+        throw new TypeError('Attachment ID must be a string');
+      }
+      const downloaded = await messagingService.downloadAttachment(
+        readAccountId(accountId),
+        createAttachmentId(attachmentId),
+      );
+      return {
+        attachmentId: downloaded.attachmentId,
+        kind: downloaded.kind,
+        mediaType: downloaded.mediaType,
+        dataUrl: `data:${downloaded.mediaType};base64,${Buffer.from(downloaded.bytes).toString('base64')}`,
+        ...(downloaded.fileName === undefined ? {} : { fileName: downloaded.fileName }),
+      };
+    },
+  );
+
   const unsubscribe = accountManager.subscribe((snapshot) => {
     publishAccounts(toAccountSnapshotDto(snapshot));
   });
@@ -223,5 +252,7 @@ export function registerIpcHandlers(services: IpcServices): () => void {
     ipcMain.removeHandler(IPC_CHANNELS.accountConnect);
     ipcMain.removeHandler(IPC_CHANNELS.chatList);
     ipcMain.removeHandler(IPC_CHANNELS.messageList);
+    ipcMain.removeHandler(IPC_CHANNELS.messageHistory);
+    ipcMain.removeHandler(IPC_CHANNELS.mediaDownload);
   };
 }

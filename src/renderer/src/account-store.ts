@@ -6,6 +6,15 @@ import type {
 
 const emptySnapshot: AccountSnapshotDto = { accounts: [], activeAccountId: null };
 
+function actionErrorMessage(reason: unknown, fallback: string): string {
+  if (!(reason instanceof Error) || reason.message.trim() === '') return fallback;
+  const message = reason.message.replace(
+    /^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/,
+    '',
+  );
+  return /^Connection Closed$/i.test(message) ? fallback : message;
+}
+
 export type AccountActionKind = 'create' | 'pair' | 'connect' | 'logout' | 'remove';
 
 interface AccountStoreState {
@@ -35,9 +44,11 @@ export const useAccountStore = create<AccountStoreState>((set) => {
       set({ snapshot, loading: false, error: null, pendingAction: null });
       return snapshot;
     } catch (reason) {
-      const message =
-        reason instanceof Error && reason.message.trim() !== '' ? reason.message : fallback;
-      set({ loading: false, error: message, pendingAction: null });
+      set({
+        loading: false,
+        error: actionErrorMessage(reason, fallback),
+        pendingAction: null,
+      });
       return null;
     }
   }

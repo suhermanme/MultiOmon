@@ -2,12 +2,9 @@ import { AccountManager } from '../application/accounts/account-manager';
 import { AccountProvisioningService } from '../application/accounts/account-provisioning';
 import { MessagingService } from '../application/messaging/messaging-service';
 import type { MessagingProvider } from '../application/ports/messaging-provider';
-import type {
-  AccountRepository,
-  RepositoryBundle,
-  TransactionRunner,
-} from '../application/ports/repositories';
-import { createAccountId, type Account, type AccountId } from '../domain';
+import type { MediaFileStore } from '../application/ports/media-file-store';
+import type { RepositoryBundle, TransactionRunner } from '../application/ports/repositories';
+import { createAccountId, type Account } from '../domain';
 import { MockMessagingProvider } from '../infrastructure/messaging/mock';
 import { WhatsappMessagingProvider } from '../infrastructure/messaging/whatsapp';
 
@@ -60,13 +57,8 @@ export function createMockMessagingProvider(): MockMessagingProvider {
   });
 }
 
-export function createWhatsappMessagingProvider(
-  authDir: string,
-  accounts: AccountRepository,
-): WhatsappMessagingProvider {
-  return new WhatsappMessagingProvider(authDir, {
-    phoneLookup: (accountId: AccountId) => accounts.getById(accountId)?.phoneNumber,
-  });
+export function createWhatsappMessagingProvider(authDir: string): WhatsappMessagingProvider {
+  return new WhatsappMessagingProvider(authDir);
 }
 
 export interface ApplicationOptions {
@@ -74,6 +66,7 @@ export interface ApplicationOptions {
   readonly repositories: RepositoryBundle;
   readonly messagingProvider: MessagingProvider;
   readonly useWhatsapp: boolean;
+  readonly mediaFiles?: MediaFileStore;
 }
 
 export interface Application {
@@ -87,6 +80,7 @@ export async function bootstrapApplication(options: ApplicationOptions): Promise
     options.messagingProvider,
     options.transactionRunner,
     options.repositories,
+    options.mediaFiles,
   );
   const accountManager = new AccountManager();
   const provisioning = new AccountProvisioningService({

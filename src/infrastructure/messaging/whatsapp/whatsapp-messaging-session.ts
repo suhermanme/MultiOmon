@@ -1,5 +1,6 @@
 import {
   ProviderError,
+  type HistoryRequest,
   type MessagingEvent,
   type MessagingEventListener,
   type MessagingSession,
@@ -13,6 +14,7 @@ import type {
   AuthenticationState,
   Chat,
   ChatUpdate,
+  Contact,
   WAVersion,
   WASocket,
   proto,
@@ -28,21 +30,71 @@ function extractPhoneFromJid(jid: string): string {
   return jid.split('@')[0] ?? jid;
 }
 
+function canonicalizeJid(jid: string): string {
+  const separator = jid.indexOf('@');
+  if (separator < 0) return jid;
+  const user = jid.slice(0, separator).split(':')[0] ?? jid.slice(0, separator);
+  return `${user}@${jid.slice(separator + 1)}`;
+}
+
+function isLidJid(jid: string): boolean {
+  return canonicalizeJid(jid).endsWith('@lid');
+}
+
 function extractRemoteIdFromJid(jid: string): string {
-  if (jid.endsWith('@g.us') || jid.endsWith('@broadcast')) {
-    return jid;
-  }
-  return extractPhoneFromJid(jid);
+  const canonicalJid = canonicalizeJid(jid);
+  return canonicalJid.endsWith('@s.whatsapp.net')
+    ? extractPhoneFromJid(canonicalJid)
+    : canonicalJid;
 }
 
 function isGroupJid(jid: string): boolean {
   return jid.endsWith('@g.us');
 }
 
-function normalizeBaileysChat(accountId: AccountId, jid: string, chat: Chat): ProviderChat {
+function toWhatsappJid(remoteId: string): string {
+  return remoteId.includes('@') ? remoteId : `${remoteId}@s.whatsapp.net`;
+}
+
+function unwrapMessageContent(
+  content: proto.IMessage | null | undefined,
+): proto.IMessage | undefined {
+  if (!content) return undefined;
+  return (
+    content.ephemeralMessage?.message ??
+    content.viewOnceMessage?.message ??
+    content.viewOnceMessageV2?.message ??
+    content.viewOnceMessageV2Extension?.message ??
+    content
+  );
+}
+
+interface MediaDescriptor {
+  readonly attachmentKind: 'image' | 'video' | 'audio' | 'document' | 'sticker';
+  readonly mediaType: string;
+  readonly remoteValue: { readonly fileLength?: unknown };
+  readonly fileName?: string;
+  readonly caption?: string;
+}
+
+function normalizeBaileysChat(
+  accountId: AccountId,
+  jid: string,
+  chat: Chat,
+  identity?: { readonly displayName?: string; readonly phoneJid?: string },
+): ProviderChat {
   const remoteId = extractRemoteIdFromJid(jid);
   const isGroup = isGroupJid(jid);
-  const title = chat.name ?? (isGroup ? `Group ${remoteId}` : extractPhoneFromJid(jid));
+  const title =
+    chat.name ??
+    identity?.displayName ??
+    (isGroup
+      ? `Group ${remoteId}`
+      : identity?.phoneJid
+        ? extractPhoneFromJid(identity.phoneJid)
+        : isLidJid(jid)
+          ? 'WhatsApp contact'
+          : extractPhoneFromJid(jid));
   const unreadCount = chat.unreadCount ?? 0;
   const activitySeconds = chat.conversationTimestamp ?? chat.lastMessageRecvTimestamp;
 
@@ -61,6 +113,8 @@ function normalizeBaileysChat(accountId: AccountId, jid: string, chat: Chat): Pr
 function normalizeBaileysMessage(
   accountId: AccountId,
   message: proto.IWebMessageInfo,
+  serializeMessage: (message: proto.IWebMessageInfo) => string,
+  resolveJid: (jid: string) => string = (jid) => jid,
 ): ProviderMessage | null {
   const jid = message.key?.remoteJid;
   const messageId = message.key?.id;
@@ -70,28 +124,78 @@ function normalizeBaileysMessage(
   const direction = message.key.fromMe ? 'outgoing' : 'incoming';
   const sentAt = message.messageTimestamp ? Number(message.messageTimestamp) * 1000 : now();
 
-  let contentKind: 'text' | 'system';
-  let text: string;
+  const content = unwrapMessageContent(message.message);
+  // History synchronization and encryption housekeeping are transport-control packets, not chat
+  // messages. Persisting them produced a wall of false "Unsupported message type" bubbles.
+  if (!content || content.protocolMessage || content.senderKeyDistributionMessage) return null;
+  const media: MediaDescriptor | undefined = content?.imageMessage
+    ? {
+        attachmentKind: 'image',
+        mediaType: content.imageMessage.mimetype ?? 'image/jpeg',
+        remoteValue: content.imageMessage,
+        ...(content.imageMessage.caption ? { caption: content.imageMessage.caption } : {}),
+      }
+    : content?.videoMessage
+      ? {
+          attachmentKind: 'video',
+          mediaType: content.videoMessage.mimetype ?? 'video/mp4',
+          remoteValue: content.videoMessage,
+          ...(content.videoMessage.caption ? { caption: content.videoMessage.caption } : {}),
+        }
+      : content?.audioMessage
+        ? {
+            attachmentKind: 'audio',
+            mediaType: content.audioMessage.mimetype ?? 'audio/ogg',
+            remoteValue: content.audioMessage,
+          }
+        : content?.documentMessage
+          ? {
+              attachmentKind: 'document',
+              mediaType: content.documentMessage.mimetype ?? 'application/octet-stream',
+              remoteValue: content.documentMessage,
+              ...(content.documentMessage.fileName
+                ? { fileName: content.documentMessage.fileName }
+                : {}),
+              ...(content.documentMessage.caption
+                ? { caption: content.documentMessage.caption }
+                : {}),
+            }
+          : content?.stickerMessage
+            ? {
+                attachmentKind: 'sticker',
+                mediaType: content.stickerMessage.mimetype ?? 'image/webp',
+                remoteValue: content.stickerMessage,
+              }
+            : undefined;
 
-  if (message.message?.conversation) {
-    contentKind = 'text';
-    text = message.message.conversation;
-  } else if (message.message?.extendedTextMessage?.text) {
-    contentKind = 'text';
-    text = message.message.extendedTextMessage.text;
-  } else {
-    contentKind = 'system';
-    text = `[${message.message ? 'Unsupported message type' : 'Empty message'}]`;
-  }
+  const normalizedContent: ProviderMessage['content'] = content?.conversation
+    ? { kind: 'text', text: content.conversation }
+    : content?.extendedTextMessage?.text
+      ? { kind: 'text', text: content.extendedTextMessage.text }
+      : media
+        ? {
+            kind: 'media',
+            attachmentKind: media.attachmentKind,
+            mediaType: media.mediaType,
+            remoteReference: serializeMessage(message),
+            ...(media.fileName ? { fileName: media.fileName } : {}),
+            ...(media.remoteValue.fileLength === undefined || media.remoteValue.fileLength === null
+              ? {}
+              : { sizeBytes: Number(media.remoteValue.fileLength) }),
+            ...(media.caption ? { caption: media.caption } : {}),
+          }
+        : { kind: 'system', text: '[Unsupported message type]' };
 
   return {
     accountId,
     remoteId: messageId,
     chatRemoteId,
     direction,
-    ...(direction === 'incoming' ? { senderRemoteId: extractPhoneFromJid(jid) } : {}),
+    ...(direction === 'incoming'
+      ? { senderRemoteId: extractPhoneFromJid(resolveJid(message.key?.participant ?? jid)) }
+      : {}),
     sentAt,
-    content: { kind: contentKind, text },
+    content: normalizedContent,
   };
 }
 
@@ -102,7 +206,6 @@ export interface WhatsappReconnectOptions {
 }
 
 export interface WhatsappSessionOptions {
-  readonly phoneNumber?: string;
   readonly reconnect?: WhatsappReconnectOptions;
 }
 
@@ -116,7 +219,6 @@ const DEFAULT_RECONNECT_FACTOR = 2;
 export class WhatsappMessagingSession implements MessagingSession {
   readonly accountId: AccountId;
   readonly #authDir: string;
-  readonly #phoneNumber?: string;
   readonly #reconnectBaseDelayMs: number;
   readonly #reconnectMaxDelayMs: number;
   readonly #reconnectFactor: number;
@@ -126,7 +228,11 @@ export class WhatsappMessagingSession implements MessagingSession {
   #version: WAVersion | null = null;
   #authState: AuthenticationState | null = null;
   #saveCreds: (() => Promise<void>) | null = null;
+  #serializeMessage: ((message: proto.IWebMessageInfo) => string) | null = null;
+  #downloadMessage: ((remoteReference: string) => Promise<Uint8Array>) | null = null;
   readonly #knownChats = new Map<string, ProviderChat>();
+  readonly #lidToPhoneJid = new Map<string, string>();
+  readonly #contactNames = new Map<string, string>();
   #eventsSubscribed = false;
   #reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   #reconnectAttempt = 0;
@@ -136,7 +242,6 @@ export class WhatsappMessagingSession implements MessagingSession {
   constructor(accountId: AccountId, authDir: string, options: WhatsappSessionOptions = {}) {
     this.accountId = accountId;
     this.#authDir = authDir;
-    this.#phoneNumber = options.phoneNumber;
     this.#reconnectBaseDelayMs = options.reconnect?.baseDelayMs ?? DEFAULT_RECONNECT_BASE_DELAY_MS;
     this.#reconnectMaxDelayMs = options.reconnect?.maxDelayMs ?? DEFAULT_RECONNECT_MAX_DELAY_MS;
     this.#reconnectFactor = options.reconnect?.factor ?? DEFAULT_RECONNECT_FACTOR;
@@ -160,27 +265,12 @@ export class WhatsappMessagingSession implements MessagingSession {
 
     // Pairing is driven by socket events: subscribe before anything is requested so the
     // `qr` stream is delivered to subscribers.
-    await this.#initializeSocket();
+    await this.#initializeSocket(true);
     this.#subscribeToEvents();
 
-    const phoneNumber = this.#phoneNumber;
-    if (!phoneNumber) {
-      // No phone number on record: pairing continues through `pairing.qr` only.
-      return;
-    }
-
-    const socket = this.#socket;
-    if (!socket) {
-      throw new ProviderError(this.accountId, 'socket-not-available', 'Socket is not available');
-    }
-
-    const pairingCode = await socket.requestPairingCode(phoneNumber);
-    this.#emit({
-      type: 'pairing.code',
-      accountId: this.accountId,
-      code: pairingCode,
-      expiresAt: now() + 5 * 60_000,
-    });
+    // Pair always uses WhatsApp's QR flow. A phone number stored on the account is metadata, not
+    // an implicit request for Baileys' separate pairing-code protocol. The QR arrives through the
+    // subscribed `connection.update` stream once the socket handshake completes.
   }
 
   async connect(): Promise<void> {
@@ -243,8 +333,9 @@ export class WhatsappMessagingSession implements MessagingSession {
       );
     }
 
+    const remoteJid = toWhatsappJid(request.chatRemoteId);
     const sentMessage = await this.#socket.sendMessage(
-      request.chatRemoteId,
+      remoteJid,
       { text: request.text },
       {
         ...(request.replyToRemoteMessageId !== undefined
@@ -252,7 +343,7 @@ export class WhatsappMessagingSession implements MessagingSession {
               // Baileys wants a full WAMessage here; the port only carries the quoted message id,
               // so the quoted participant and body stay unknown.
               quoted: {
-                key: { id: request.replyToRemoteMessageId, remoteJid: request.chatRemoteId },
+                key: { id: request.replyToRemoteMessageId, remoteJid },
               },
             }
           : {}),
@@ -277,6 +368,38 @@ export class WhatsappMessagingSession implements MessagingSession {
 
     this.#emit({ type: 'message.upserted', message });
     return message;
+  }
+
+  async requestHistory(request: HistoryRequest): Promise<void> {
+    this.#assertNotDisposed();
+    if (this.#state.kind !== 'connected' || !this.#socket) {
+      throw new ProviderError(
+        this.accountId,
+        'not-connected',
+        'Cannot sync history while disconnected',
+      );
+    }
+    await this.#socket.fetchMessageHistory(
+      request.count,
+      {
+        remoteJid: toWhatsappJid(request.chatRemoteId),
+        id: request.oldestRemoteMessageId,
+        fromMe: request.oldestDirection === 'outgoing',
+      },
+      request.oldestSentAt,
+    );
+  }
+
+  async downloadMedia(remoteReference: string): Promise<Uint8Array> {
+    this.#assertNotDisposed();
+    if (this.#state.kind !== 'connected' || !this.#downloadMessage) {
+      throw new ProviderError(
+        this.accountId,
+        'not-connected',
+        'Cannot download media while disconnected',
+      );
+    }
+    return this.#downloadMessage(remoteReference);
   }
 
   subscribe(listener: MessagingEventListener): () => void {
@@ -338,7 +461,7 @@ export class WhatsappMessagingSession implements MessagingSession {
     }
   }
 
-  async #initializeSocket(): Promise<void> {
+  async #initializeSocket(resetIncompletePairing = false): Promise<void> {
     if (this.#socket) {
       return;
     }
@@ -348,12 +471,37 @@ export class WhatsappMessagingSession implements MessagingSession {
     // must not load the ESM-only Baileys protocol stack.
     const baileys = await import('@whiskeysockets/baileys');
 
+    this.#serializeMessage ??= (message) =>
+      Buffer.from(baileys.proto.WebMessageInfo.encode(message).finish()).toString('base64');
+    this.#downloadMessage ??= async (remoteReference) => {
+      const message = baileys.proto.WebMessageInfo.decode(Buffer.from(remoteReference, 'base64'));
+      const bytes = await baileys.downloadMediaMessage(message, 'buffer', {});
+      return new Uint8Array(bytes);
+    };
+
     if (!this.#authState || !this.#saveCreds) {
       const sessionDir = path.join(this.#authDir, this.accountId);
       fs.mkdirSync(sessionDir, { recursive: true });
-      const authResult = await baileys.useMultiFileAuthState(sessionDir);
+      let authResult = await baileys.useMultiFileAuthState(sessionDir);
+      // Baileys' pairing-code protocol can persist `creds.me` before its registration stanza
+      // succeeds. Older app versions used that protocol whenever an account had a phone number.
+      // An explicit Pair action may reset only this unregistered partial state so the QR flow can
+      // start cleanly; fully registered credentials are never removed here.
+      if (
+        resetIncompletePairing &&
+        !authResult.state.creds.registered &&
+        authResult.state.creds.me
+      ) {
+        fs.rmSync(sessionDir, { recursive: true, force: true });
+        fs.mkdirSync(sessionDir, { recursive: true });
+        authResult = await baileys.useMultiFileAuthState(sessionDir);
+      }
       this.#authState = authResult.state;
       this.#saveCreds = authResult.saveCreds;
+      const ownIdentity = authResult.state.creds.me;
+      if (ownIdentity?.lid && ownIdentity.id) {
+        this.#rememberLidMapping(ownIdentity.lid, ownIdentity.id);
+      }
     }
 
     if (!this.#version) {
@@ -371,7 +519,14 @@ export class WhatsappMessagingSession implements MessagingSession {
     }
 
     const version = this.#version;
-    this.#socket = baileys.makeWASocket({ version, auth: authState });
+    // WhatsApp sends the conversation/message snapshot only when history sync is enabled. Baileys
+    // defaults this off, which can leave a successfully linked account with an empty local view.
+    this.#socket = baileys.makeWASocket({
+      version,
+      auth: authState,
+      browser: ['Ubuntu', 'Desktop', '22.04.4'],
+      syncFullHistory: true,
+    });
 
     // Persist credentials whenever they update
     this.#socket.ev.on('creds.update', () => {
@@ -435,7 +590,7 @@ export class WhatsappMessagingSession implements MessagingSession {
 
     socket.ev.on('chats.upsert', (chats) => {
       for (const chat of chats) {
-        const normalized = normalizeBaileysChat(this.accountId, chat.id, chat);
+        const normalized = this.#normalizeChat(chat.id, chat);
         this.#knownChats.set(normalized.remoteId, normalized);
         this.#emit({ type: 'chat.upserted', chat: normalized });
       }
@@ -444,14 +599,20 @@ export class WhatsappMessagingSession implements MessagingSession {
     // History sync (M06): Baileys delivers the conversation list and recent messages
     // reverse-chronologically on connect; map them onto the normalized events the
     // projection already understands.
-    socket.ev.on('messaging-history.set', ({ chats, messages }) => {
+    socket.ev.on('messaging-history.set', ({ chats, contacts = [], messages }) => {
+      for (const contact of contacts) this.#rememberContact(contact);
       for (const chat of chats) {
-        const normalized = normalizeBaileysChat(this.accountId, chat.id, chat);
+        const normalized = this.#normalizeChat(chat.id, chat);
         this.#knownChats.set(normalized.remoteId, normalized);
         this.#emit({ type: 'chat.upserted', chat: normalized });
       }
       for (const message of messages) {
-        const normalized = normalizeBaileysMessage(this.accountId, message);
+        const normalized = normalizeBaileysMessage(
+          this.accountId,
+          message,
+          this.#requireSerializer(),
+          (jid) => this.#resolveJid(jid),
+        );
         if (normalized) {
           this.#emit({ type: 'message.upserted', message: normalized });
         }
@@ -464,15 +625,91 @@ export class WhatsappMessagingSession implements MessagingSession {
       }
     });
 
+    socket.ev.on('contacts.upsert', (contacts) => {
+      for (const contact of contacts) this.#rememberContact(contact);
+    });
+
+    socket.ev.on('contacts.update', (contacts) => {
+      for (const contact of contacts) this.#rememberContact(contact);
+    });
+
+    socket.ev.on('chats.phoneNumberShare', ({ lid, jid }) => {
+      this.#rememberLidMapping(lid, jid);
+    });
+
     socket.ev.on('messages.upsert', ({ messages }) => {
       for (const message of messages) {
-        const normalized = normalizeBaileysMessage(this.accountId, message);
+        const normalized = normalizeBaileysMessage(
+          this.accountId,
+          message,
+          this.#requireSerializer(),
+          (jid) => this.#resolveJid(jid),
+        );
         if (normalized) {
           this.#emit({ type: 'message.upserted', message: normalized });
         }
       }
     });
   }
+
+  #requireSerializer(): (message: proto.IWebMessageInfo) => string {
+    const serializeMessage = this.#serializeMessage;
+    if (!serializeMessage) {
+      throw new ProviderError(
+        this.accountId,
+        'media-unavailable',
+        'Media serializer is unavailable',
+      );
+    }
+    return serializeMessage;
+  }
+
+  #normalizeChat(jid: string, chat: Chat): ProviderChat {
+    const canonicalJid = canonicalizeJid(jid);
+    const resolvedJid = this.#resolveJid(canonicalJid);
+    return normalizeBaileysChat(this.accountId, canonicalJid, chat, {
+      ...((this.#contactNames.get(canonicalJid) ?? this.#contactNames.get(resolvedJid))
+        ? {
+            displayName:
+              this.#contactNames.get(canonicalJid) ?? this.#contactNames.get(resolvedJid),
+          }
+        : {}),
+      ...(resolvedJid === canonicalJid ? {} : { phoneJid: resolvedJid }),
+    });
+  }
+
+  #resolveJid(jid: string): string {
+    const canonicalJid = canonicalizeJid(jid);
+    return this.#lidToPhoneJid.get(canonicalJid) ?? canonicalJid;
+  }
+
+  #rememberContact(contact: Partial<Contact>): void {
+    const id = typeof contact.id === 'string' ? canonicalizeJid(contact.id) : undefined;
+    const lid = typeof contact.lid === 'string' ? canonicalizeJid(contact.lid) : undefined;
+    const jid = typeof contact.jid === 'string' ? canonicalizeJid(contact.jid) : undefined;
+    const displayName = contact.name ?? contact.notify ?? contact.verifiedName;
+
+    if (lid && jid) this.#rememberLidMapping(lid, jid);
+    if (displayName) {
+      for (const key of [id, lid, jid]) {
+        if (key) this.#contactNames.set(key, displayName);
+      }
+    }
+  }
+
+  #rememberLidMapping(lid: string, jid: string): void {
+    const canonicalLid = canonicalizeJid(lid);
+    const canonicalPhoneJid = canonicalizeJid(jid);
+    this.#lidToPhoneJid.set(canonicalLid, canonicalPhoneJid);
+
+    const remoteId = extractRemoteIdFromJid(canonicalLid);
+    const known = this.#knownChats.get(remoteId);
+    if (!known || (known.title !== remoteId && known.title !== 'WhatsApp contact')) return;
+    const updated = { ...known, title: extractPhoneFromJid(canonicalPhoneJid) };
+    this.#knownChats.set(remoteId, updated);
+    this.#emit({ type: 'chat.upserted', chat: updated });
+  }
+
   #cleanupSocket(): void {
     const socket = this.#socket;
     if (!socket) return;
@@ -480,6 +717,9 @@ export class WhatsappMessagingSession implements MessagingSession {
     socket.ev.removeAllListeners('connection.update');
     socket.ev.removeAllListeners('chats.upsert');
     socket.ev.removeAllListeners('chats.update');
+    socket.ev.removeAllListeners('chats.phoneNumberShare');
+    socket.ev.removeAllListeners('contacts.upsert');
+    socket.ev.removeAllListeners('contacts.update');
     socket.ev.removeAllListeners('messaging-history.set');
     socket.ev.removeAllListeners('messages.upsert');
     socket.ev.removeAllListeners('creds.update');

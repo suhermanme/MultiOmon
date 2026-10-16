@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import QRCode from 'qrcode';
 import type {
   AccountConnectionStateDto,
@@ -6,6 +6,7 @@ import type {
   CreateAccountRequestDto,
   PairingUpdateDto,
   RuntimeInfo,
+  MessageContentDto,
 } from '../../shared/contracts/desktop-api';
 import { useAccountStore } from './account-store';
 import { useMessagingStore } from './messaging-store';
@@ -34,7 +35,7 @@ const emptyChatStates: Readonly<
   },
   needsPairing: {
     title: 'Pairing required',
-    body: 'Scan the pairing code with WhatsApp to sync this account.',
+    body: 'Press Pair, then scan the QR code with WhatsApp to sync this account.',
   },
   connecting: {
     title: 'Syncing conversations…',
@@ -60,6 +61,92 @@ function initials(name: string): string {
     .slice(0, 2)
     .map((part) => part[0]?.toUpperCase() ?? '')
     .join('');
+}
+
+function dayKey(timestamp: number): string {
+  const date = new Date(timestamp);
+  return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+}
+
+function dayLabel(timestamp: number): string {
+  const date = new Date(timestamp);
+  const today = new Date();
+  if (dayKey(timestamp) === dayKey(today.getTime())) return 'Today';
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+  if (dayKey(timestamp) === dayKey(yesterday.getTime())) return 'Yesterday';
+  return date.toLocaleDateString(undefined, { dateStyle: 'medium' });
+}
+
+function senderLabel(senderRemoteId: string): string {
+  return senderRemoteId.split('@')[0] ?? senderRemoteId;
+}
+
+function fileSizeLabel(sizeBytes: number | undefined): string | null {
+  if (sizeBytes === undefined) return null;
+  if (sizeBytes < 1024) return `${sizeBytes} B`;
+  if (sizeBytes < 1024 * 1024) return `${(sizeBytes / 1024).toFixed(1)} KB`;
+  return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function MediaMessage({
+  accountId,
+  content,
+}: {
+  readonly accountId: string;
+  readonly content: Extract<MessageContentDto, { kind: 'media' }>;
+}): React.JSX.Element {
+  const [dataUrl, setDataUrl] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [failed, setFailed] = useState(false);
+
+  const download = async (): Promise<void> => {
+    if (loading || dataUrl) return;
+    setLoading(true);
+    setFailed(false);
+    try {
+      const media = await window.multiomon.messaging.downloadMedia(accountId, content.attachmentId);
+      setDataUrl(media.dataUrl);
+    } catch {
+      setFailed(true);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const name = content.fileName ?? `${content.attachmentKind} attachment`;
+  const size = fileSizeLabel(content.sizeBytes);
+
+  return (
+    <div className="message-media">
+      {dataUrl && (content.attachmentKind === 'image' || content.attachmentKind === 'sticker') ? (
+        <img className="media-preview" src={dataUrl} alt={content.caption ?? name} />
+      ) : dataUrl && content.attachmentKind === 'video' ? (
+        <video className="media-preview" src={dataUrl} controls aria-label={name} />
+      ) : dataUrl && content.attachmentKind === 'audio' ? (
+        <audio className="media-audio" src={dataUrl} controls aria-label={name} />
+      ) : dataUrl ? (
+        <a className="media-download" href={dataUrl} download={content.fileName ?? 'attachment'}>
+          Save {name}
+        </a>
+      ) : (
+        <button
+          className="media-download"
+          type="button"
+          disabled={loading}
+          onClick={() => void download()}
+        >
+          {loading ? 'Downloading…' : `Download ${name}`}
+        </button>
+      )}
+      <span className="media-meta">
+        {content.attachmentKind}
+        {size ? ` · ${size}` : ''}
+        {failed ? ' · download failed' : ''}
+      </span>
+      {content.caption ? <p>{content.caption}</p> : null}
+    </div>
+  );
 }
 
 interface AccountButtonProps {
@@ -103,12 +190,24 @@ interface AddAccountFormProps {
   readonly onCreate: (request: CreateAccountRequestDto) => Promise<boolean>;
 }
 
-function AddAccountForm({ busy, onCreate }: AddAccountFormProps): React.JSX.Element {
+function AddAccountDialog({ busy, onCreate }: AddAccountFormProps): React.JSX.Element {
+  const [open, setOpen] = useState(false);
   const [displayName, setDisplayName] = useState('');
   const [phoneNumber, setPhoneNumber] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const nameInput = useRef<HTMLInputElement>(null);
   const name = displayName.trim();
   const phone = phoneNumber.trim();
+
+  useEffect(() => {
+    if (!open) return;
+    nameInput.current?.focus();
+    const closeOnEscape = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape' && !submitting) setOpen(false);
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [open, submitting]);
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
@@ -121,35 +220,97 @@ function AddAccountForm({ busy, onCreate }: AddAccountFormProps): React.JSX.Elem
     if (!created) return;
     setDisplayName('');
     setPhoneNumber('');
+    setOpen(false);
   };
 
   return (
-    <form className="add-account-form" onSubmit={(event) => void handleSubmit(event)}>
-      <label htmlFor="new-account-name">New account</label>
-      <input
-        id="new-account-name"
-        className="text-input"
-        value={displayName}
-        placeholder="Personal"
-        onChange={(event) => setDisplayName(event.target.value)}
-      />
-      <label htmlFor="new-account-phone">Phone (optional)</label>
-      <input
-        id="new-account-phone"
-        className="text-input"
-        value={phoneNumber}
-        placeholder="+15551234567"
-        inputMode="tel"
-        onChange={(event) => setPhoneNumber(event.target.value)}
-      />
+    <>
       <button
-        className="add-account-submit"
-        type="submit"
-        disabled={name === '' || submitting || busy}
+        className="add-account-trigger"
+        type="button"
+        disabled={busy}
+        onClick={() => setOpen(true)}
       >
-        {submitting ? 'Adding…' : 'Add account'}
+        <span aria-hidden="true">+</span>
+        Add account
       </button>
-    </form>
+      {open ? (
+        <div
+          className="dialog-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !submitting) setOpen(false);
+          }}
+        >
+          <section
+            className="account-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="add-account-title"
+          >
+            <header className="dialog-header">
+              <div>
+                <span className="section-label">New connection</span>
+                <h2 id="add-account-title">Add an account</h2>
+              </div>
+              <button
+                className="dialog-close"
+                type="button"
+                aria-label="Close add account dialog"
+                disabled={submitting}
+                onClick={() => setOpen(false)}
+              >
+                ×
+              </button>
+            </header>
+            <p className="dialog-intro">
+              Give this WhatsApp account a recognizable name. You can pair it after it is added.
+            </p>
+            <form className="add-account-form" onSubmit={(event) => void handleSubmit(event)}>
+              <label htmlFor="new-account-name">Account name</label>
+              <input
+                ref={nameInput}
+                id="new-account-name"
+                className="text-input"
+                value={displayName}
+                placeholder="Personal"
+                autoComplete="off"
+                onChange={(event) => setDisplayName(event.target.value)}
+              />
+              <label htmlFor="new-account-phone">
+                Phone number <span>Optional</span>
+              </label>
+              <input
+                id="new-account-phone"
+                className="text-input"
+                value={phoneNumber}
+                placeholder="+1 555 123 4567"
+                inputMode="tel"
+                autoComplete="tel"
+                onChange={(event) => setPhoneNumber(event.target.value)}
+              />
+              <div className="dialog-actions">
+                <button
+                  className="dialog-cancel"
+                  type="button"
+                  disabled={submitting}
+                  onClick={() => setOpen(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="add-account-submit"
+                  type="submit"
+                  disabled={name === '' || submitting || busy}
+                >
+                  {submitting ? 'Adding…' : 'Add account'}
+                </button>
+              </div>
+            </form>
+          </section>
+        </div>
+      ) : null}
+    </>
   );
 }
 
@@ -288,6 +449,7 @@ function PairingPanel({ account, update }: PairingPanelProps): React.JSX.Element
       ) : (
         <div className="pairing-code-block">
           <strong className="pairing-code">{update.code}</strong>
+          <p>In WhatsApp, choose Linked devices → Link with phone number, then enter this code.</p>
           <time className="pairing-expiry" dateTime={new Date(update.expiresAt).toISOString()}>
             Expires {new Date(update.expiresAt).toLocaleString()}
           </time>
@@ -325,6 +487,8 @@ export function App(): React.JSX.Element {
     selectChat,
     loadMoreChats,
     loadOlderMessages,
+    requestEarlierHistory,
+    historyLoading,
   } = useMessagingStore();
   const activeAccount =
     snapshot.accounts.find((account) => account.id === snapshot.activeAccountId) ?? null;
@@ -383,16 +547,6 @@ export function App(): React.JSX.Element {
 
   const selectedChat = chats.find((chat) => chat.id === selectedChatId) ?? null;
 
-  const messageText = (content: (typeof messages)[number]['content']): string => {
-    switch (content.kind) {
-      case 'text':
-      case 'system':
-        return content.text;
-      case 'media':
-        return content.caption ?? 'Media attachment';
-    }
-  };
-
   return (
     <main className="app-shell">
       <header className="titlebar">
@@ -403,12 +557,24 @@ export function App(): React.JSX.Element {
           <span>MultiOmon</span>
         </div>
         <div className={`bridge-pill bridge-${bridgeStatus.kind}`} role="status">
-          <span aria-hidden="true" />
-          {bridgeStatus.kind === 'ready'
-            ? 'Desktop ready'
-            : bridgeStatus.kind === 'failed'
-              ? 'Desktop unavailable'
-              : 'Starting…'}
+          <span className="bridge-dot" aria-hidden="true" />
+          {bridgeStatus.kind === 'ready' ? (
+            <>
+              <strong className="provider-label">
+                {bridgeStatus.runtime.messagingProvider === 'whatsapp'
+                  ? 'WhatsApp live'
+                  : 'Mock mode'}
+              </strong>
+              <span className="bridge-separator" aria-hidden="true">
+                ·
+              </span>
+              <span>Desktop ready</span>
+            </>
+          ) : bridgeStatus.kind === 'failed' ? (
+            'Desktop unavailable'
+          ) : (
+            'Starting…'
+          )}
         </div>
       </header>
 
@@ -424,7 +590,7 @@ export function App(): React.JSX.Element {
               />
             ))}
           </div>
-          <AddAccountForm busy={pendingAction !== null} onCreate={createAccount} />
+          <AddAccountDialog busy={pendingAction !== null} onCreate={createAccount} />
         </aside>
 
         <section className="conversation-list" aria-label="Conversations">
@@ -551,17 +717,52 @@ export function App(): React.JSX.Element {
                     Load older messages
                   </button>
                 )}
-                {messages.map((message) => (
-                  <article
-                    key={message.id}
-                    className={`message-bubble message-${message.direction}`}
-                  >
-                    {message.content.kind === 'system' && (
-                      <span className="message-kind">System</span>
-                    )}
-                    <p>{messageText(message.content)}</p>
-                  </article>
-                ))}
+                {messagesNextCursor === null &&
+                  messages.length > 0 &&
+                  activeAccount?.connectionState.kind === 'connected' && (
+                    <button
+                      className="load-older"
+                      type="button"
+                      disabled={historyLoading}
+                      onClick={() => void requestEarlierHistory()}
+                    >
+                      {historyLoading ? 'Requesting history…' : 'Fetch earlier history'}
+                    </button>
+                  )}
+                {messages.map((message, index) => {
+                  const previous = messages[index - 1];
+                  const startsDay = !previous || dayKey(previous.sentAt) !== dayKey(message.sentAt);
+                  return (
+                    <Fragment key={message.id}>
+                      {startsDay ? (
+                        <div className="date-separator">{dayLabel(message.sentAt)}</div>
+                      ) : null}
+                      <article className={`message-bubble message-${message.direction}`}>
+                        {message.content.kind === 'system' ? (
+                          <span className="message-kind">System</span>
+                        ) : message.direction === 'incoming' && message.senderRemoteId ? (
+                          <span className="message-sender">
+                            {senderLabel(message.senderRemoteId)}
+                          </span>
+                        ) : null}
+                        {message.content.kind === 'media' ? (
+                          <MediaMessage accountId={message.accountId} content={message.content} />
+                        ) : (
+                          <p>{message.content.text}</p>
+                        )}
+                        <time
+                          className="message-time"
+                          dateTime={new Date(message.sentAt).toISOString()}
+                        >
+                          {new Date(message.sentAt).toLocaleTimeString([], {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })}
+                        </time>
+                      </article>
+                    </Fragment>
+                  );
+                })}
               </div>
               <div className="projection-note">
                 Read-only local history · sending arrives in M08

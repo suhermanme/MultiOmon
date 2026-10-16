@@ -97,6 +97,67 @@ export const migrations: readonly Migration[] = [
         ON chats(account_id, COALESCE(last_activity_at, 0) DESC, id DESC);
     `,
   },
+  {
+    version: 5,
+    name: 'add_media_attachments',
+    sql: `
+      CREATE TABLE attachments (
+        account_id TEXT NOT NULL,
+        id TEXT NOT NULL,
+        message_id TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('image', 'video', 'audio', 'document', 'sticker')),
+        media_type TEXT NOT NULL,
+        file_name TEXT,
+        size_bytes INTEGER,
+        local_path TEXT,
+        remote_reference TEXT,
+        PRIMARY KEY (account_id, id),
+        FOREIGN KEY (account_id, message_id)
+          REFERENCES messages(account_id, id) ON DELETE CASCADE
+      ) STRICT;
+
+      CREATE INDEX attachments_by_message
+        ON attachments(account_id, message_id);
+    `,
+  },
+  {
+    version: 6,
+    name: 'remove_transport_control_placeholders',
+    sql: `
+      UPDATE chats
+      SET
+        title = CASE
+          WHEN title = remote_id THEN COALESCE(
+            (SELECT phone_number FROM accounts WHERE accounts.id = chats.account_id),
+            'WhatsApp contact'
+          )
+          ELSE title
+        END,
+        remote_id = remote_id || '@lid'
+      WHERE kind = 'direct'
+        AND remote_id NOT GLOB '*[^0-9]*'
+        AND EXISTS (
+          SELECT 1 FROM messages
+          WHERE messages.account_id = chats.account_id
+            AND messages.chat_id = chats.id
+            AND messages.content_kind = 'system'
+            AND messages.text_content IN ('[Unsupported message type]', '[Empty message]')
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM messages
+          WHERE messages.account_id = chats.account_id
+            AND messages.chat_id = chats.id
+            AND NOT (
+              messages.content_kind = 'system'
+              AND messages.text_content IN ('[Unsupported message type]', '[Empty message]')
+            )
+        );
+
+      DELETE FROM messages
+      WHERE content_kind = 'system'
+        AND text_content IN ('[Unsupported message type]', '[Empty message]');
+    `,
+  },
 ];
 
 interface MigrationRow {

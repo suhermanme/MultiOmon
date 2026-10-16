@@ -3,6 +3,7 @@ import { electronApp, is, optimizer } from '@electron-toolkit/utils';
 import { app, BrowserWindow, shell } from 'electron';
 import { MessagingView } from '../application/messaging/messaging-view';
 import { createRepositories, SqliteDatabase } from '../infrastructure/database';
+import { LocalMediaFileStore } from '../infrastructure/storage';
 import {
   bootstrapApplication,
   createMockMessagingProvider,
@@ -39,18 +40,20 @@ void app.whenReady().then(async () => {
   const repositories = createRepositories(database);
   const useWhatsapp = process.env.WHATSAPP_PROVIDER === '1';
   const messagingProvider = useWhatsapp
-    ? createWhatsappMessagingProvider(
-        join(app.getPath('userData'), 'authInfo'),
-        repositories.accounts,
-      )
+    ? createWhatsappMessagingProvider(join(app.getPath('userData'), 'authInfo'))
     : createMockMessagingProvider();
   const { messagingService, accountManager, provisioning } = await bootstrapApplication({
     transactionRunner: database,
     repositories,
     messagingProvider,
     useWhatsapp,
+    mediaFiles: new LocalMediaFileStore(join(app.getPath('userData'), 'media')),
   });
-  const messagingView = new MessagingView(repositories.chats, repositories.messages);
+  const messagingView = new MessagingView(
+    repositories.chats,
+    repositories.messages,
+    repositories.attachments,
+  );
   const unregisterIpcHandlers = registerIpcHandlers({
     accountManager,
     messagingService,

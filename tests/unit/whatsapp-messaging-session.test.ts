@@ -15,7 +15,13 @@ type EventHandler = (...args: unknown[]) => void;
 interface FakeSocket {
   readonly id: number;
   readonly pairingCodeRequests: string[];
+  readonly pairingSteps: string[];
   readonly sentTexts: string[];
+  readonly historyRequests: Array<{
+    count: number;
+    key: { remoteJid?: string | null; id?: string | null; fromMe?: boolean | null };
+    timestamp: number;
+  }>;
   readonly ev: {
     on(event: string, handler: EventHandler): void;
     removeAllListeners(event: string): void;
@@ -26,6 +32,12 @@ interface FakeSocket {
   end(reason?: unknown): void;
   logout(): Promise<void>;
   requestPairingCode(phoneNumber: string): Promise<string>;
+  waitForSocketOpen(): Promise<void>;
+  fetchMessageHistory(
+    count: number,
+    key: { remoteJid?: string | null; id?: string | null; fromMe?: boolean | null },
+    timestamp: number,
+  ): Promise<string>;
   sendMessage(
     jid: string,
     content: { text?: string },
@@ -36,14 +48,22 @@ interface FakeSocket {
 const harness = vi.hoisted(() => {
   const sockets: FakeSocket[] = [];
   const authStateDirs: string[] = [];
-  const counters = { saveCredsCalls: 0, versionCalls: 0, authFailures: 0 };
+  const authIdentity: { id?: string; lid?: string } = {};
+  const counters = {
+    saveCredsCalls: 0,
+    versionCalls: 0,
+    authFailures: 0,
+    incompleteAuthLoads: 0,
+  };
 
   const createSocket = (): FakeSocket => {
     const handlers = new Map<string, EventHandler[]>();
     const socket: FakeSocket = {
       id: sockets.length + 1,
       pairingCodeRequests: [],
+      pairingSteps: [],
       sentTexts: [],
+      historyRequests: [],
       ended: false,
       loggedOut: false,
       ev: {
@@ -70,8 +90,17 @@ const harness = vi.hoisted(() => {
         return Promise.resolve();
       },
       requestPairingCode: (requestedNumber) => {
+        socket.pairingSteps.push('request-code');
         socket.pairingCodeRequests.push(requestedNumber);
         return Promise.resolve('PAIR-CODE');
+      },
+      waitForSocketOpen: () => {
+        socket.pairingSteps.push('socket-open');
+        return Promise.resolve();
+      },
+      fetchMessageHistory: (count, key, timestamp) => {
+        socket.historyRequests.push({ count, key, timestamp });
+        return Promise.resolve('history-request-1');
       },
       sendMessage: (jid, content) => {
         socket.sentTexts.push(content.text ?? '');
@@ -85,6 +114,7 @@ const harness = vi.hoisted(() => {
   return {
     sockets,
     authStateDirs,
+    authIdentity,
     counters,
     makeWASocket: () => createSocket(),
     useMultiFileAuthState: (dir: string) => {
@@ -93,8 +123,18 @@ const harness = vi.hoisted(() => {
         counters.authFailures -= 1;
         return Promise.reject(new Error('auth state unavailable'));
       }
+      const incomplete = counters.incompleteAuthLoads > 0;
+      if (incomplete) counters.incompleteAuthLoads -= 1;
       return Promise.resolve({
-        state: {},
+        state: {
+          creds: {
+            registered: false,
+            ...(authIdentity.id
+              ? { me: { id: authIdentity.id, name: 'Test account', lid: authIdentity.lid } }
+              : {}),
+            ...(incomplete ? { me: { id: 'partial@s.whatsapp.net', name: 'Partial' } } : {}),
+          },
+        },
         saveCreds: () => {
           counters.saveCredsCalls += 1;
           return Promise.resolve();
@@ -112,11 +152,16 @@ vi.mock('@whiskeysockets/baileys', () => ({
   makeWASocket: harness.makeWASocket,
   useMultiFileAuthState: harness.useMultiFileAuthState,
   fetchLatestBaileysVersion: harness.fetchLatestBaileysVersion,
+  proto: {
+    WebMessageInfo: {
+      encode: () => ({ finish: () => new Uint8Array([1, 2, 3]) }),
+      decode: () => ({}),
+    },
+  },
+  downloadMediaMessage: () => Promise.resolve(Buffer.from('downloaded-media')),
 }));
 
 const accountId = createAccountId('test-account');
-const phoneNumber = '+33612345678';
-
 function requireSocket(index: number): FakeSocket {
   const socket = harness.sockets[index];
   if (!socket) throw new Error(`Expected a fake Baileys socket at index ${index}`);
@@ -172,9 +217,12 @@ describe('WhatsappMessagingSession', () => {
     rmSync(authDir, { recursive: true, force: true });
     harness.sockets.length = 0;
     harness.authStateDirs.length = 0;
+    delete harness.authIdentity.id;
+    delete harness.authIdentity.lid;
     harness.counters.saveCredsCalls = 0;
     harness.counters.versionCalls = 0;
     harness.counters.authFailures = 0;
+    harness.counters.incompleteAuthLoads = 0;
   });
 
   describe('initial state', () => {
@@ -218,7 +266,7 @@ describe('WhatsappMessagingSession', () => {
   });
 
   describe('startPairing', () => {
-    it('opens a socket and waits for a QR payload when no phone number is known', async () => {
+    it('opens a socket and waits for a QR payload', async () => {
       const session = new WhatsappMessagingSession(accountId, authDir);
       const events = collectEvents(session);
 
@@ -237,21 +285,34 @@ describe('WhatsappMessagingSession', () => {
       );
     });
 
-    it('requests a pairing code when a phone number is known', async () => {
-      const session = new WhatsappMessagingSession(accountId, authDir, { phoneNumber });
+    it('does not invoke the separate phone-number pairing protocol', async () => {
+      const session = new WhatsappMessagingSession(accountId, authDir);
       const events = collectEvents(session);
-      const startedAt = Date.now();
 
       await session.startPairing();
 
-      expect(requireSocket(0).pairingCodeRequests).toEqual([phoneNumber]);
-      const codeEvent = events.find((event) => event.type === 'pairing.code');
-      if (!codeEvent || codeEvent.type !== 'pairing.code') {
-        throw new Error('Expected a pairing.code event');
-      }
-      expect(codeEvent.accountId).toBe(accountId);
-      expect(codeEvent.code).toBe('PAIR-CODE');
-      expect(codeEvent.expiresAt).toBe(startedAt + 5 * 60_000);
+      expect(requireSocket(0).pairingSteps).toEqual([]);
+      expect(requireSocket(0).pairingCodeRequests).toEqual([]);
+      expect(events.some((event) => event.type === 'pairing.code')).toBe(false);
+    });
+
+    it('resets an incomplete unregistered identity before starting the QR flow', async () => {
+      harness.counters.incompleteAuthLoads = 1;
+      const session = new WhatsappMessagingSession(accountId, authDir);
+      const events = collectEvents(session);
+
+      await session.startPairing();
+
+      const sessionDir = path.join(authDir, accountId);
+      expect(harness.authStateDirs).toEqual([sessionDir, sessionDir]);
+      expect(harness.sockets).toHaveLength(1);
+      expect(requireSocket(0).pairingSteps).toEqual([]);
+      expect(requireSocket(0).pairingCodeRequests).toEqual([]);
+
+      requireSocket(0).emit('connection.update', { qr: 'fresh-qr-payload' });
+      expect(events).toContainEqual(
+        expect.objectContaining({ type: 'pairing.qr', payload: 'fresh-qr-payload' }),
+      );
     });
 
     it('announces disconnected before needsPairing when already connected', async () => {
@@ -565,6 +626,59 @@ describe('WhatsappMessagingSession', () => {
   });
 
   describe('history hydration', () => {
+    it('uses the phone identity for a LID chat without changing its stable remote key', async () => {
+      harness.authIdentity.id = '628111222333@s.whatsapp.net';
+      harness.authIdentity.lid = '180900000000001:0@lid';
+      const { events } = await openConnectedSession(authDir);
+
+      requireSocket(0).emit('messaging-history.set', {
+        chats: [{ id: '180900000000001@lid', unreadCount: 0 }],
+        contacts: [],
+        messages: [
+          {
+            key: {
+              id: 'lid-message',
+              remoteJid: '180900000000001@lid',
+              participant: '180900000000001:1@lid',
+              fromMe: false,
+            },
+            message: { conversation: 'hello from a LID chat' },
+            messageTimestamp: 1_700_000_000,
+          },
+        ],
+      });
+
+      expect(chatUpserts(events)[0]).toMatchObject({
+        remoteId: '180900000000001@lid',
+        title: '628111222333',
+      });
+      const messageEvent = events.find((event) => event.type === 'message.upserted');
+      expect(messageEvent).toMatchObject({
+        message: { chatRemoteId: '180900000000001@lid', senderRemoteId: '628111222333' },
+      });
+    });
+
+    it('does not project transport-control packets as unsupported messages', async () => {
+      const { events } = await openConnectedSession(authDir);
+
+      requireSocket(0).emit('messages.upsert', {
+        messages: [
+          {
+            key: { id: 'protocol-1', remoteJid: '33612345678@s.whatsapp.net', fromMe: true },
+            message: { protocolMessage: { type: 5 } },
+            messageTimestamp: 1_700_000_000,
+          },
+          {
+            key: { id: 'empty-1', remoteJid: '33612345678@s.whatsapp.net', fromMe: true },
+            message: undefined,
+            messageTimestamp: 1_700_000_001,
+          },
+        ],
+      });
+
+      expect(events.filter((event) => event.type === 'message.upserted')).toHaveLength(0);
+    });
+
     it('maps messaging-history.set chats and messages onto normalized events', async () => {
       const { events } = await openConnectedSession(authDir);
 
@@ -645,6 +759,70 @@ describe('WhatsappMessagingSession', () => {
       ]);
 
       expect(chatUpserts(events)[0]).toMatchObject({ lastActivityAt: 1_700_000_000_000 });
+    });
+
+    it('requests an older page using the oldest persisted message anchor', async () => {
+      const { session } = await openConnectedSession(authDir);
+
+      await session.requestHistory({
+        chatRemoteId: '33612345678',
+        oldestRemoteMessageId: 'oldest-1',
+        oldestDirection: 'incoming',
+        oldestSentAt: 1_700_000_000_000,
+        count: 50,
+      });
+
+      expect(requireSocket(0).historyRequests).toEqual([
+        {
+          count: 50,
+          key: {
+            remoteJid: '33612345678@s.whatsapp.net',
+            id: 'oldest-1',
+            fromMe: false,
+          },
+          timestamp: 1_700_000_000_000,
+        },
+      ]);
+    });
+
+    it('normalizes media metadata and downloads the serialized provider message', async () => {
+      const { session, events } = await openConnectedSession(authDir);
+
+      requireSocket(0).emit('messages.upsert', {
+        messages: [
+          {
+            key: {
+              id: 'image-1',
+              remoteJid: 'group-1@g.us',
+              participant: '33612345678@s.whatsapp.net',
+              fromMe: false,
+            },
+            message: {
+              imageMessage: {
+                mimetype: 'image/jpeg',
+                fileLength: 123,
+                caption: 'Holiday',
+              },
+            },
+            messageTimestamp: 1_700_000_000,
+          },
+        ],
+      });
+
+      const event = events.find((candidate) => candidate.type === 'message.upserted');
+      if (!event || event.type !== 'message.upserted' || event.message.content.kind !== 'media') {
+        throw new Error('Expected normalized media message');
+      }
+      expect(event.message).toMatchObject({ senderRemoteId: '33612345678' });
+      expect(event.message.content).toMatchObject({
+        attachmentKind: 'image',
+        mediaType: 'image/jpeg',
+        sizeBytes: 123,
+        caption: 'Holiday',
+      });
+      await expect(session.downloadMedia(event.message.content.remoteReference)).resolves.toEqual(
+        new Uint8Array(Buffer.from('downloaded-media')),
+      );
     });
   });
 

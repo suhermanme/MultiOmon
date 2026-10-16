@@ -9,12 +9,10 @@ multiple WhatsApp accounts. It targets macOS, Windows, and Linux.
 
 ## Current milestone
 
-M04 adds the first real transport: a Baileys-backed `WhatsappMessagingSession` behind the same
-provider contract, with per-account `useMultiFileAuthState` storage and typed Baileys event
-normalization. Pairing codes are requested through `requestPairingCode(phoneNumber)`, but no pairing
-UI exists yet, so the mock provider remains the supported path. Normalized events still flow through
-the application layer into SQLite, then reach a read-only chat/message projection in React through
-the typed preload bridge.
+M07 adds production conversation hydration and pagination, account pairing/lifecycle controls,
+media-message metadata with on-demand local caching, provider-backed older-history requests, and a
+responsive three-column conversation UI. Normalized provider events flow through the application
+layer into SQLite, then reach the read-only React projection through the typed preload bridge.
 
 Local application data is stored below Electron's platform-specific `userData` directory in
 `database/multiomon.sqlite`. Large media will use filesystem storage in a later milestone rather

@@ -1,6 +1,8 @@
 import type {
   Account,
   AccountId,
+  Attachment,
+  AttachmentId,
   Chat,
   ChatId,
   Contact,
@@ -53,6 +55,7 @@ export interface MessageRepository {
   insert(message: Message): boolean;
   getById(accountId: AccountId, messageId: MessageId): Message | null;
   getByRemoteId(accountId: AccountId, remoteId: string): Message | null;
+  getOldestByChat(accountId: AccountId, chatId: ChatId): Message | null;
   listPage(
     accountId: AccountId,
     chatId: ChatId,
@@ -61,8 +64,14 @@ export interface MessageRepository {
   ): Page<Message, MessagePageCursor>;
 }
 
+export interface AttachmentRepository {
+  save(attachment: Attachment): void;
+  getById(accountId: AccountId, attachmentId: AttachmentId): Attachment | null;
+}
+
 export interface RepositoryBundle {
   readonly accounts: AccountRepository;
+  readonly attachments: AttachmentRepository;
   readonly chats: ChatRepository;
   readonly contacts: ContactRepository;
   readonly messages: MessageRepository;

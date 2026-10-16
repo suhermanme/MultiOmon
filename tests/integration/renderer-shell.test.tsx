@@ -32,6 +32,8 @@ describe('renderer shell', () => {
   let getSnapshot: Mock<DesktopApi['accounts']['getSnapshot']>;
   let listChats: Mock<DesktopApi['messaging']['listChats']>;
   let listMessages: Mock<DesktopApi['messaging']['listMessages']>;
+  let requestHistory: Mock<DesktopApi['messaging']['requestHistory']>;
+  let downloadMedia: Mock<DesktopApi['messaging']['downloadMedia']>;
 
   beforeEach(() => {
     useAccountStore.setState({
@@ -83,6 +85,16 @@ describe('renderer shell', () => {
         nextCursor: null,
       }),
     );
+    requestHistory = vi
+      .fn<DesktopApi['messaging']['requestHistory']>()
+      .mockResolvedValue(undefined);
+    downloadMedia = vi.fn<DesktopApi['messaging']['downloadMedia']>().mockResolvedValue({
+      attachmentId: 'attachment-1',
+      kind: 'image',
+      mediaType: 'image/png',
+      dataUrl: 'data:image/png;base64,cGhvdG8=',
+      fileName: 'photo.png',
+    });
 
     Object.defineProperty(window, 'multiomon', {
       configurable: true,
@@ -90,6 +102,7 @@ describe('renderer shell', () => {
         ping: vi.fn().mockResolvedValue('pong'),
         getRuntimeInfo: vi.fn().mockResolvedValue({
           platform: 'darwin',
+          messagingProvider: 'mock',
           versions: { chrome: '1', electron: '44.7.2', node: '24.0.0' },
         }),
         accounts: {
@@ -105,6 +118,8 @@ describe('renderer shell', () => {
         messaging: {
           listChats,
           listMessages,
+          requestHistory,
+          downloadMedia,
           subscribe: vi.fn().mockReturnValue(vi.fn()),
         },
         pairing: {
@@ -128,6 +143,7 @@ describe('renderer shell', () => {
       screen.getByRole('button', { name: /Switch to Community account, Connected/ }),
     ).toBeVisible();
     expect(screen.getByText('Desktop ready')).toBeVisible();
+    expect(screen.getByText('Mock mode')).toBeVisible();
     expect(screen.getByRole('button', { name: /Example conversation/ })).toBeVisible();
     expect(await screen.findByText('Mock provider projection is connected.')).toBeVisible();
   });
@@ -308,7 +324,47 @@ describe('renderer shell', () => {
 
     expect(await screen.findByText('Pairing required')).toBeVisible();
     expect(
-      screen.getByText('Scan the pairing code with WhatsApp to sync this account.'),
+      screen.getByText('Press Pair, then scan the QR code with WhatsApp to sync this account.'),
     ).toBeVisible();
+  });
+
+  it('renders sender and date metadata and downloads media on demand', async () => {
+    listMessages.mockResolvedValue({
+      items: [
+        {
+          id: 'personal-media',
+          accountId: 'personal',
+          chatId: 'personal-chat',
+          direction: 'incoming',
+          senderRemoteId: '15551234567@s.whatsapp.net',
+          sentAt: new Date(2026, 0, 2, 10, 30).getTime(),
+          content: {
+            kind: 'media',
+            attachmentId: 'attachment-1',
+            attachmentKind: 'image',
+            mediaType: 'image/png',
+            fileName: 'photo.png',
+            sizeBytes: 2048,
+            caption: 'A photo',
+          },
+        },
+      ],
+      nextCursor: null,
+    });
+    render(createElement(App));
+
+    expect(await screen.findByText('15551234567')).toBeVisible();
+    expect(screen.getByText('Jan 2, 2026')).toBeVisible();
+    expect(screen.getByText('image · 2.0 KB')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Download photo.png' }));
+
+    expect(await screen.findByRole('img', { name: 'A photo' })).toHaveAttribute(
+      'src',
+      'data:image/png;base64,cGhvdG8=',
+    );
+    expect(downloadMedia).toHaveBeenCalledWith('personal', 'attachment-1');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Fetch earlier history' }));
+    await waitFor(() => expect(requestHistory).toHaveBeenCalledWith('personal', 'personal-chat'));
   });
 });

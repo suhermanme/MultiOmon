@@ -19,6 +19,7 @@ export interface MockAccountHistory {
 export interface MockSessionOptions {
   readonly paired?: boolean;
   readonly history?: MockAccountHistory;
+  readonly historyPages?: readonly MockAccountHistory[];
   readonly failConnectionWith?: { readonly code: string; readonly message: string };
   readonly now?: () => number;
 }
@@ -27,6 +28,7 @@ export class MockMessagingSession implements MessagingSession {
   readonly accountId: AccountId;
   readonly #listeners = new Set<MessagingEventListener>();
   readonly #history: MockAccountHistory;
+  readonly #historyPages: MockAccountHistory[];
   readonly #chats = new Map<string, ProviderChat>();
   readonly #failConnectionWith: MockSessionOptions['failConnectionWith'];
   readonly #now: () => number;
@@ -41,6 +43,7 @@ export class MockMessagingSession implements MessagingSession {
     this.accountId = accountId;
     this.#paired = options.paired ?? true;
     this.#history = options.history ?? {};
+    this.#historyPages = [...(options.historyPages ?? [])];
     this.#failConnectionWith = options.failConnectionWith;
     this.#now = options.now ?? Date.now;
     this.#state = { kind: 'idle', changedAt: this.#now() };
@@ -160,6 +163,37 @@ export class MockMessagingSession implements MessagingSession {
       lastActivityAt: message.sentAt,
     });
     return Promise.resolve(message);
+  }
+
+  requestHistory(): Promise<void> {
+    this.#assertNotDisposed();
+    if (this.#state.kind !== 'connected') {
+      return Promise.reject(
+        new ProviderError(
+          this.accountId,
+          'not-connected',
+          'Cannot sync history while disconnected',
+        ),
+      );
+    }
+    const page = this.#historyPages.shift();
+    if (page) {
+      for (const chat of page.chats ?? []) this.#recordChat(chat);
+      for (const message of page.messages ?? []) {
+        this.#emit({ type: 'message.upserted', message });
+      }
+    }
+    return Promise.resolve();
+  }
+
+  downloadMedia(remoteReference: string): Promise<Uint8Array> {
+    this.#assertNotDisposed();
+    if (this.#state.kind !== 'connected') {
+      return Promise.reject(
+        new ProviderError(this.accountId, 'not-connected', 'Cannot download while disconnected'),
+      );
+    }
+    return Promise.resolve(new TextEncoder().encode(remoteReference));
   }
 
   subscribe(listener: MessagingEventListener): () => void {

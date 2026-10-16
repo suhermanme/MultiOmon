@@ -349,3 +349,57 @@ ADR-013 ordering (events fire only after commit) while bounding bridge traffic.
 Consequences:
 The preload `messaging.subscribe` listener receives arrays, and the store reloads once per batch;
 per-chat keys mean a burst touching several chats yields one entry per chat, not a global reload.
+
+## ADR-024 — Media metadata is durable; media bytes are cached on demand
+
+Decision:
+Provider media messages project a deterministic attachment ID into `messages` and a separate
+`attachments` row introduced by migration v5. The row stores transport-neutral metadata and an
+opaque provider reference. Bytes are downloaded only after a user action, written beneath
+`userData/media/<accountId>/` through `MediaFileStore`, and served to the renderer through the typed
+bridge without exposing the local path.
+
+Reason:
+Putting large encrypted media payloads in SQLite would inflate the projection and make routine chat
+queries expensive. Keeping the provider reference opaque preserves the application/provider
+boundary while still allowing the WhatsApp adapter to reconstruct the Baileys message required by
+`downloadMediaMessage`.
+
+Consequences:
+Media metadata remains visible offline; opening uncached media requires a connected provider
+session. A missing cache file is recoverable by downloading it again, and account removal deletes
+that account's media directory.
+
+## ADR-025 — Older history is requested from the oldest durable message
+
+Decision:
+`MessagingService.requestHistory` resolves the account-scoped chat and its oldest projected message,
+then asks the active provider session for the preceding page. The WhatsApp adapter maps that request
+to `fetchMessageHistory` and lets the resulting history events flow through the normal projection
+pipeline.
+
+Reason:
+Using a durable message as the provider cursor makes requests stable across renderer reloads and
+keeps provider-specific keys out of IPC. Reusing the existing event path preserves transactional
+deduplication and change batching.
+
+Consequences:
+History backfill requires at least one local anchor message and a connected session. The provider
+does not expose a definitive end-of-history flag, so the UI offers another explicit request after
+the local page is exhausted.
+
+## ADR-026 — Media rendering remains capability-scoped through IPC
+
+Decision:
+The renderer receives attachment metadata in `MessageDto` and invokes `messaging.downloadMedia`
+with only an account ID and attachment ID. The main process validates ownership, retrieves or caches
+the bytes, and returns a MIME-qualified data URL for the selected attachment.
+
+Reason:
+Neither absolute filesystem paths nor arbitrary read capabilities belong in the sandboxed renderer.
+The typed command keeps access account-scoped and user-initiated while supporting native image,
+video, audio, sticker, and document controls.
+
+Consequences:
+Downloaded bytes cross IPC once when opened; a future streaming protocol can replace data URLs for
+very large media without changing the durable attachment model.

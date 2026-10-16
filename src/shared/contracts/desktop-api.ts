@@ -12,6 +12,8 @@ export const IPC_CHANNELS = {
   pairingChanged: 'pairing:changed',
   chatList: 'messaging:chats',
   messageList: 'messaging:messages',
+  messageHistory: 'messaging:history',
+  mediaDownload: 'messaging:media-download',
   messagingChanged: 'messaging:changed',
 } as const;
 
@@ -68,13 +70,22 @@ export interface ChatSummaryDto {
 export type MessageContentDto =
   | { readonly kind: 'text'; readonly text: string }
   | { readonly kind: 'system'; readonly text: string }
-  | { readonly kind: 'media'; readonly attachmentId: string; readonly caption?: string };
+  | {
+      readonly kind: 'media';
+      readonly attachmentId: string;
+      readonly attachmentKind: 'image' | 'video' | 'audio' | 'document' | 'sticker';
+      readonly mediaType: string;
+      readonly fileName?: string;
+      readonly sizeBytes?: number;
+      readonly caption?: string;
+    };
 
 export interface MessageDto {
   readonly id: string;
   readonly accountId: string;
   readonly chatId: string;
   readonly direction: 'incoming' | 'outgoing';
+  readonly senderRemoteId?: string;
   readonly sentAt: number;
   readonly content: MessageContentDto;
 }
@@ -114,8 +125,17 @@ export interface MessagePageDto {
   readonly nextCursor: MessagePageCursorDto | null;
 }
 
+export interface MediaDownloadDto {
+  readonly attachmentId: string;
+  readonly kind: 'image' | 'video' | 'audio' | 'document' | 'sticker';
+  readonly mediaType: string;
+  readonly dataUrl: string;
+  readonly fileName?: string;
+}
+
 export interface RuntimeInfo {
   readonly platform: string;
+  readonly messagingProvider: 'mock' | 'whatsapp';
   readonly versions: {
     readonly chrome: string;
     readonly electron: string;
@@ -146,6 +166,8 @@ export interface DesktopApi {
       chatId: string,
       options?: MessagePageOptionsDto,
     ) => Promise<MessagePageDto>;
+    readonly requestHistory: (accountId: string, chatId: string) => Promise<void>;
+    readonly downloadMedia: (accountId: string, attachmentId: string) => Promise<MediaDownloadDto>;
     readonly subscribe: (listener: (changes: readonly MessagingChangeDto[]) => void) => () => void;
   };
 }

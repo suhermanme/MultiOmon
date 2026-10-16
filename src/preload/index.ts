@@ -9,6 +9,7 @@ import {
   type MessagePageDto,
   type MessagePageOptionsDto,
   type MessagingChangeDto,
+  type MediaDownloadDto,
   type PairingUpdateDto,
   type RuntimeInfo,
 } from '../shared/contracts/desktop-api';
@@ -58,6 +59,14 @@ const desktopApi: DesktopApi = Object.freeze({
         chatId,
         options,
       ) as Promise<MessagePageDto>,
+    requestHistory: (accountId: string, chatId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.messageHistory, accountId, chatId) as Promise<void>,
+    downloadMedia: (accountId: string, attachmentId: string) =>
+      ipcRenderer.invoke(
+        IPC_CHANNELS.mediaDownload,
+        accountId,
+        attachmentId,
+      ) as Promise<MediaDownloadDto>,
     subscribe: (listener: (changes: readonly MessagingChangeDto[]) => void) => {
       const handler = (
         _event: Electron.IpcRendererEvent,

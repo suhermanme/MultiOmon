@@ -14,12 +14,15 @@ interface MessagingStoreState {
   readonly selectedChatId: string | null;
   readonly messages: readonly MessageDto[];
   readonly messagesNextCursor: MessagePageCursorDto | null;
+  readonly messageLimit: number;
+  readonly historyLoading: boolean;
   readonly loading: boolean;
   readonly error: string | null;
   readonly loadAccount: (accountId: string | null) => Promise<void>;
   readonly selectChat: (chatId: string) => Promise<void>;
   readonly loadMoreChats: () => Promise<void>;
   readonly loadOlderMessages: () => Promise<void>;
+  readonly requestEarlierHistory: () => Promise<void>;
   readonly refresh: (changes: readonly MessagingChangeDto[]) => Promise<void>;
 }
 
@@ -36,12 +39,15 @@ interface Projection {
 async function loadProjection(
   accountId: string,
   preferredChatId: string | null,
+  messageLimit = 50,
 ): Promise<Projection> {
   const chatPage = await window.multiomon.messaging.listChats(accountId);
   const selectedChatId =
     chatPage.items.find(({ id }) => id === preferredChatId)?.id ?? chatPage.items.at(0)?.id ?? null;
   const messagePage = selectedChatId
-    ? await window.multiomon.messaging.listMessages(accountId, selectedChatId)
+    ? await window.multiomon.messaging.listMessages(accountId, selectedChatId, {
+        limit: messageLimit,
+      })
     : { items: [], nextCursor: null };
   return {
     chats: chatPage.items,
@@ -59,6 +65,8 @@ export const useMessagingStore = create<MessagingStoreState>((set, get) => ({
   selectedChatId: null,
   messages: [],
   messagesNextCursor: null,
+  messageLimit: 50,
+  historyLoading: false,
   loading: false,
   error: null,
   loadAccount: async (accountId) => {
@@ -71,6 +79,8 @@ export const useMessagingStore = create<MessagingStoreState>((set, get) => ({
         selectedChatId: null,
         messages: [],
         messagesNextCursor: null,
+        messageLimit: 50,
+        historyLoading: false,
         loading: false,
       });
       return;
@@ -82,6 +92,8 @@ export const useMessagingStore = create<MessagingStoreState>((set, get) => ({
       selectedChatId: null,
       messages: [],
       messagesNextCursor: null,
+      messageLimit: 50,
+      historyLoading: false,
       loading: true,
       error: null,
     });
@@ -102,6 +114,8 @@ export const useMessagingStore = create<MessagingStoreState>((set, get) => ({
       selectedChatId: chatId,
       messages: [],
       messagesNextCursor: null,
+      messageLimit: 50,
+      historyLoading: false,
       loading: true,
       error: null,
     });
@@ -150,11 +164,29 @@ export const useMessagingStore = create<MessagingStoreState>((set, get) => ({
       set((state) => ({
         messages: [...page.items, ...state.messages],
         messagesNextCursor: page.nextCursor,
+        messageLimit: Math.min(state.messageLimit + 50, 200),
         loading: false,
       }));
     } catch {
       if (request !== requestSequence) return;
       set({ loading: false, error: 'Could not load older messages.' });
+    }
+  },
+  requestEarlierHistory: async () => {
+    const { accountId, selectedChatId, historyLoading, messages } = get();
+    if (accountId === null || selectedChatId === null || historyLoading || messages.length === 0) {
+      return;
+    }
+    set((state) => ({
+      historyLoading: true,
+      messageLimit: Math.min(state.messageLimit + 50, 200),
+      error: null,
+    }));
+    try {
+      await window.multiomon.messaging.requestHistory(accountId, selectedChatId);
+      set({ historyLoading: false });
+    } catch {
+      set({ historyLoading: false, error: 'Could not request earlier provider history.' });
     }
   },
   refresh: async (changes) => {
@@ -164,7 +196,11 @@ export const useMessagingStore = create<MessagingStoreState>((set, get) => ({
     if (!changes.some((change) => change.accountId === state.accountId)) return;
     const request = ++requestSequence;
     try {
-      const projection = await loadProjection(state.accountId, state.selectedChatId);
+      const projection = await loadProjection(
+        state.accountId,
+        state.selectedChatId,
+        state.messageLimit,
+      );
       if (request !== requestSequence) return;
       set({ ...projection, loading: false, error: null });
     } catch {

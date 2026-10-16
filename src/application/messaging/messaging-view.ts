@@ -1,4 +1,5 @@
 import type {
+  AttachmentRepository,
   ChatPageCursor,
   ChatRepository,
   MessagePageCursor,
@@ -18,28 +19,39 @@ import type {
 } from '../../shared/contracts/desktop-api';
 import type { PairingEvent } from './messaging-service';
 
-function toMessageContentDto(content: MessageContent): MessageContentDto {
+function toMessageContentDto(
+  accountId: AccountId,
+  content: MessageContent,
+  attachments?: AttachmentRepository,
+): MessageContentDto {
   switch (content.kind) {
     case 'text':
     case 'system':
       return content;
-    case 'media':
+    case 'media': {
+      const attachment = attachments?.getById(accountId, content.attachmentId);
       return {
         kind: 'media',
         attachmentId: content.attachmentId,
+        attachmentKind: attachment?.kind ?? 'document',
+        mediaType: attachment?.mediaType ?? 'application/octet-stream',
+        ...(attachment?.fileName === undefined ? {} : { fileName: attachment.fileName }),
+        ...(attachment?.sizeBytes === undefined ? {} : { sizeBytes: attachment.sizeBytes }),
         ...(content.caption === undefined ? {} : { caption: content.caption }),
       };
+    }
   }
 }
 
-function toMessageDto(message: Message): MessageDto {
+function toMessageDto(message: Message, attachments?: AttachmentRepository): MessageDto {
   return {
     id: message.id,
     accountId: message.accountId,
     chatId: message.chatId,
     direction: message.direction,
     sentAt: message.sentAt,
-    content: toMessageContentDto(message.content),
+    content: toMessageContentDto(message.accountId, message.content, attachments),
+    ...(message.senderRemoteId === undefined ? {} : { senderRemoteId: message.senderRemoteId }),
   };
 }
 
@@ -106,10 +118,16 @@ function fromMessagePageOptions(options: MessagePageOptionsDto): {
 export class MessagingView {
   readonly #chats: ChatRepository;
   readonly #messages: MessageRepository;
+  readonly #attachments?: AttachmentRepository;
 
-  constructor(chats: ChatRepository, messages: MessageRepository) {
+  constructor(
+    chats: ChatRepository,
+    messages: MessageRepository,
+    attachments?: AttachmentRepository,
+  ) {
     this.#chats = chats;
     this.#messages = messages;
+    this.#attachments = attachments;
   }
 
   listChats(accountId: AccountId, options: ChatPageOptionsDto = {}): ChatPageDto {
@@ -129,7 +147,7 @@ export class MessagingView {
     const { limit, cursor } = fromMessagePageOptions(options);
     const page = this.#messages.listPage(accountId, chatId, limit, cursor);
     return {
-      items: [...page.items].reverse().map(toMessageDto),
+      items: [...page.items].reverse().map((message) => toMessageDto(message, this.#attachments)),
       nextCursor: page.nextCursor
         ? { sentAt: page.nextCursor.sentAt, messageId: page.nextCursor.messageId }
         : null,

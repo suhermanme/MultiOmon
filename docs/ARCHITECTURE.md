@@ -2,10 +2,10 @@
 
 ## Scope
 
-M03 provides the desktop shell, provider-independent messaging domain models, account-scoped
-messaging sessions, a durable SQLite projection, and a complete mock-provider flow. M04 adds an
-opt-in Baileys transport behind the same provider contract; live WhatsApp connectivity stays behind
-`WHATSAPP_PROVIDER=1` and is never exercised by the test suite.
+The application provides a secure desktop shell, provider-independent messaging models,
+account-scoped sessions, a durable SQLite projection, on-demand filesystem media caching, and a
+complete mock-provider flow. Live WhatsApp connectivity stays behind `WHATSAPP_PROVIDER=1` and is
+never exercised by the test suite.
 
 ## Process boundaries
 
@@ -138,7 +138,7 @@ SQLite repositories ── SqliteDatabase ── versioned migrations
 keys, a five-second busy timeout, and WAL mode for file-backed databases. `SqliteDatabase` exposes a
 small transaction runner; repositories convert between rows and domain values.
 
-The initial schema contains `accounts`, `contacts`, `chats`, and `messages`. Messaging rows use
+The schema contains `accounts`, `contacts`, `chats`, `messages`, and `attachments`. Messaging rows use
 composite `(account_id, id)` primary keys, and remote message deduplication uses the unique key
 `(account_id, remote_id)`. Foreign keys include account context so identical IDs in separate
 accounts cannot collide.
@@ -150,6 +150,11 @@ rather than deleting or recreating them.
 Message pages are ordered newest-first by `(sent_at DESC, id DESC)`. Cursors contain both values,
 which provides stable pagination even when several messages share a timestamp. Page sizes are
 bounded to 1–200.
+
+Attachment rows contain metadata and an opaque provider reference; downloaded bytes live below
+`userData/media/<accountId>/` and are never exposed by path to the renderer. Older provider history
+is requested using the oldest durable message as an anchor, then returns through the same normalized
+event and projection path as initial history.
 
 ## Build and packaging
 

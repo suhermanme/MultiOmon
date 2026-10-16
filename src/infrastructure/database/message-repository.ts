@@ -150,6 +150,17 @@ export class SqliteMessageRepository implements MessageRepository {
     );
   }
 
+  getOldestByChat(accountId: AccountId, chatId: ChatId): Message | null {
+    return this.#getOne(
+      `${selectMessage}
+       WHERE account_id = ? AND chat_id = ?
+       ORDER BY sent_at ASC, id ASC
+       LIMIT 1`,
+      accountId,
+      chatId,
+    );
+  }
+
   listPage(
     accountId: AccountId,
     chatId: ChatId,

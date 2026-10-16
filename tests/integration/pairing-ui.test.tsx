@@ -51,6 +51,7 @@ describe('pairing UI', () => {
         ping: vi.fn().mockResolvedValue('pong'),
         getRuntimeInfo: vi.fn().mockResolvedValue({
           platform: 'linux',
+          messagingProvider: 'mock',
           versions: { chrome: '1', electron: '44.7.2', node: '24.0.0' },
         }),
         accounts: {
@@ -68,6 +69,8 @@ describe('pairing UI', () => {
         messaging: {
           listChats: vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
           listMessages: vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
+          requestHistory: vi.fn().mockResolvedValue(undefined),
+          downloadMedia: vi.fn().mockRejectedValue(new Error('No fixture media')),
           subscribe: vi.fn().mockReturnValue(vi.fn()),
         },
         pairing: {
@@ -88,15 +91,31 @@ describe('pairing UI', () => {
     render(createElement(App));
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Personal' })).toBeVisible());
 
-    fireEvent.change(screen.getByLabelText('New account'), { target: { value: 'Work' } });
-    fireEvent.change(screen.getByLabelText('Phone (optional)'), {
+    expect(screen.queryByRole('dialog', { name: 'Add an account' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Add account' }));
+
+    expect(screen.getByRole('dialog', { name: 'Add an account' })).toBeVisible();
+    fireEvent.change(screen.getByLabelText('Account name'), { target: { value: 'Work' } });
+    fireEvent.change(screen.getByLabelText(/Phone number/), {
       target: { value: '+447700900123' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Add account' }));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Add account' }).at(-1)!);
 
     await waitFor(() =>
       expect(create).toHaveBeenCalledWith({ displayName: 'Work', phoneNumber: '+447700900123' }),
     );
+    expect(screen.queryByRole('dialog', { name: 'Add an account' })).toBeNull();
+  });
+
+  it('dismisses the add-account dialog without creating an account', async () => {
+    render(createElement(App));
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Personal' })).toBeVisible());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add account' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    expect(screen.queryByRole('dialog', { name: 'Add an account' })).toBeNull();
+    expect(create).not.toHaveBeenCalled();
   });
 
   it('starts pairing and renders the QR update pushed through the bridge', async () => {

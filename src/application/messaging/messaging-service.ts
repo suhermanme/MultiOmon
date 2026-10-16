@@ -1,4 +1,5 @@
 import type { ManagedAccountSession } from '../accounts/account-session';
+import type { MediaFileStore } from '../ports/media-file-store';
 import type {
   MessagingEvent,
   MessagingProvider,
@@ -7,9 +8,11 @@ import type {
 import type { RepositoryBundle, TransactionRunner } from '../ports/repositories';
 import {
   createChatId,
+  createAttachmentId,
   createMessageId,
   createScopedRemoteKey,
   type AccountId,
+  type AttachmentId,
   type ChatId,
 } from '../../domain';
 import { ProviderAccountSession } from './provider-account-session';
@@ -17,6 +20,14 @@ import { ProviderAccountSession } from './provider-account-session';
 export interface MessagingProjectionChange {
   readonly accountId: AccountId;
   readonly chatId: ChatId;
+}
+
+export interface DownloadedAttachment {
+  readonly attachmentId: AttachmentId;
+  readonly mediaType: string;
+  readonly kind: 'image' | 'video' | 'audio' | 'document' | 'sticker';
+  readonly bytes: Uint8Array;
+  readonly fileName?: string;
 }
 
 export type MessagingProjectionListener = (change: MessagingProjectionChange) => void;
@@ -31,7 +42,14 @@ interface SessionEntry {
 }
 
 export class MessagingApplicationError extends Error {
-  readonly code: 'duplicate-session' | 'event-account-mismatch' | 'missing-session';
+  readonly code:
+    | 'duplicate-session'
+    | 'event-account-mismatch'
+    | 'missing-session'
+    | 'missing-chat'
+    | 'missing-history-anchor'
+    | 'missing-attachment'
+    | 'media-unavailable';
 
   constructor(code: MessagingApplicationError['code'], message: string) {
     super(message);
@@ -44,6 +62,7 @@ export class MessagingService {
   readonly #provider: MessagingProvider;
   readonly #transactionRunner: TransactionRunner;
   readonly #repositories: RepositoryBundle;
+  readonly #mediaFiles?: MediaFileStore;
   readonly #sessions = new Map<AccountId, SessionEntry>();
   readonly #listeners = new Set<MessagingProjectionListener>();
   readonly #pairingListeners = new Set<PairingEventListener>();
@@ -52,10 +71,12 @@ export class MessagingService {
     provider: MessagingProvider,
     transactionRunner: TransactionRunner,
     repositories: RepositoryBundle,
+    mediaFiles?: MediaFileStore,
   ) {
     this.#provider = provider;
     this.#transactionRunner = transactionRunner;
     this.#repositories = repositories;
+    this.#mediaFiles = mediaFiles;
   }
 
   createAccountSession(accountId: AccountId): ManagedAccountSession {
@@ -90,6 +111,77 @@ export class MessagingService {
     return entry.session;
   }
 
+  async requestHistory(accountId: AccountId, chatId: ChatId, count = 50): Promise<void> {
+    const chat = this.#repositories.chats.getById(accountId, chatId);
+    if (!chat) {
+      throw new MessagingApplicationError('missing-chat', `Chat ${chatId} does not exist`);
+    }
+    const oldest = this.#repositories.messages.getOldestByChat(accountId, chatId);
+    if (!oldest) {
+      throw new MessagingApplicationError(
+        'missing-history-anchor',
+        `Chat ${chatId} has no message to anchor history`,
+      );
+    }
+    await this.getSession(accountId).requestHistory({
+      chatRemoteId: chat.remoteId,
+      oldestRemoteMessageId: oldest.remoteId,
+      oldestDirection: oldest.direction,
+      oldestSentAt: oldest.sentAt,
+      count: Math.min(Math.max(Math.trunc(count), 1), 200),
+    });
+  }
+
+  async downloadAttachment(
+    accountId: AccountId,
+    attachmentId: AttachmentId,
+  ): Promise<DownloadedAttachment> {
+    const attachment = this.#repositories.attachments.getById(accountId, attachmentId);
+    if (!attachment) {
+      throw new MessagingApplicationError(
+        'missing-attachment',
+        `Attachment ${attachmentId} does not exist`,
+      );
+    }
+    const mediaFiles = this.#mediaFiles;
+    if (!mediaFiles) {
+      throw new MessagingApplicationError(
+        'media-unavailable',
+        'Local media storage is unavailable',
+      );
+    }
+
+    let bytes: Uint8Array | undefined;
+    if (attachment.localPath) {
+      try {
+        bytes = mediaFiles.read(attachment.localPath);
+      } catch {
+        // A missing cache file can be recovered from the provider reference below.
+      }
+    }
+    if (!bytes) {
+      if (!attachment.remoteReference) {
+        throw new MessagingApplicationError(
+          'media-unavailable',
+          `Attachment ${attachmentId} has no downloadable provider reference`,
+        );
+      }
+      bytes = await this.getSession(accountId).downloadMedia(attachment.remoteReference);
+      const localPath = mediaFiles.save(accountId, attachment.id, attachment.fileName, bytes);
+      this.#transactionRunner.runInTransaction(() => {
+        this.#repositories.attachments.save({ ...attachment, localPath });
+      });
+    }
+
+    return {
+      attachmentId,
+      kind: attachment.kind,
+      mediaType: attachment.mediaType,
+      bytes,
+      ...(attachment.fileName === undefined ? {} : { fileName: attachment.fileName }),
+    };
+  }
+
   subscribe(listener: MessagingProjectionListener): () => void {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
@@ -116,6 +208,7 @@ export class MessagingService {
     entry.managedSession.dispose();
     entry.session.dispose();
     this.#sessions.delete(accountId);
+    this.#mediaFiles?.removeAccount(accountId);
   }
 
   dispose(): void {
@@ -211,17 +304,44 @@ export class MessagingService {
     const reply = message.replyToRemoteMessageId
       ? this.#repositories.messages.getByRemoteId(message.accountId, message.replyToRemoteMessageId)
       : null;
+    const messageId = createMessageId(createScopedRemoteKey(message.accountId, message.remoteId));
+    const attachmentId =
+      message.content.kind === 'media'
+        ? createAttachmentId(createScopedRemoteKey(message.accountId, `${message.remoteId}:media`))
+        : undefined;
+    const content =
+      message.content.kind === 'media'
+        ? {
+            kind: 'media' as const,
+            attachmentId: attachmentId!,
+            ...(message.content.caption === undefined ? {} : { caption: message.content.caption }),
+          }
+        : message.content;
     const inserted = this.#repositories.messages.insert({
-      id: createMessageId(createScopedRemoteKey(message.accountId, message.remoteId)),
+      id: messageId,
       accountId: message.accountId,
       chatId,
       remoteId: message.remoteId,
       direction: message.direction,
       sentAt: message.sentAt,
-      content: message.content,
+      content,
       ...(message.senderRemoteId === undefined ? {} : { senderRemoteId: message.senderRemoteId }),
       ...(reply === null ? {} : { replyToMessageId: reply.id }),
     });
+    if (inserted && message.content.kind === 'media' && attachmentId) {
+      this.#repositories.attachments.save({
+        id: attachmentId,
+        accountId: message.accountId,
+        messageId,
+        kind: message.content.attachmentKind,
+        mediaType: message.content.mediaType,
+        remoteReference: message.content.remoteReference,
+        ...(message.content.fileName === undefined ? {} : { fileName: message.content.fileName }),
+        ...(message.content.sizeBytes === undefined
+          ? {}
+          : { sizeBytes: message.content.sizeBytes }),
+      });
+    }
     return inserted ? { accountId: message.accountId, chatId } : null;
   }
 }

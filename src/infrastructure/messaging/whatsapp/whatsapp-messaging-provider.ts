@@ -9,23 +9,17 @@ import {
   type WhatsappSessionOptions,
 } from './whatsapp-messaging-session';
 
-/** Resolves the phone number on record for an account, if any. */
-export type WhatsappPhoneLookup = (accountId: AccountId) => string | undefined;
-
 export interface WhatsappProviderOptions {
-  readonly phoneLookup?: WhatsappPhoneLookup;
   readonly reconnect?: WhatsappReconnectOptions;
 }
 
 export class WhatsappMessagingProvider implements MessagingProvider {
   readonly #sessions = new Map<AccountId, WhatsappMessagingSession>();
   readonly #authDir: string;
-  readonly #phoneLookup?: WhatsappPhoneLookup;
   readonly #reconnect?: WhatsappReconnectOptions;
 
   constructor(authDir: string, options: WhatsappProviderOptions = {}) {
     this.#authDir = authDir;
-    this.#phoneLookup = options.phoneLookup;
     this.#reconnect = options.reconnect;
   }
 
@@ -33,9 +27,7 @@ export class WhatsappMessagingProvider implements MessagingProvider {
     if (this.#sessions.has(accountId)) {
       throw new ProviderError(accountId, 'duplicate-session', 'Session already exists');
     }
-    const phoneNumber = this.#phoneLookup?.(accountId);
     const sessionOptions: WhatsappSessionOptions = {
-      ...(phoneNumber === undefined ? {} : { phoneNumber }),
       ...(this.#reconnect === undefined ? {} : { reconnect: this.#reconnect }),
     };
     const session = new WhatsappMessagingSession(accountId, this.#authDir, sessionOptions);

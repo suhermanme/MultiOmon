@@ -22,9 +22,20 @@ export interface ProviderChat {
   readonly lastActivityAt?: number;
 }
 
+export interface ProviderMediaContent {
+  readonly kind: 'media';
+  readonly attachmentKind: 'image' | 'video' | 'audio' | 'document' | 'sticker';
+  readonly mediaType: string;
+  readonly remoteReference: string;
+  readonly fileName?: string;
+  readonly sizeBytes?: number;
+  readonly caption?: string;
+}
+
 export type ProviderMessageContent =
   | { readonly kind: 'text'; readonly text: string }
-  | { readonly kind: 'system'; readonly text: string };
+  | { readonly kind: 'system'; readonly text: string }
+  | ProviderMediaContent;
 
 export interface ProviderMessage {
   readonly accountId: AccountId;
@@ -59,6 +70,14 @@ export interface SendTextRequest {
   readonly replyToRemoteMessageId?: string;
 }
 
+export interface HistoryRequest {
+  readonly chatRemoteId: string;
+  readonly oldestRemoteMessageId: string;
+  readonly oldestDirection: 'incoming' | 'outgoing';
+  readonly oldestSentAt: number;
+  readonly count: number;
+}
+
 export type MessagingEventListener = (event: MessagingEvent) => void;
 export type Unsubscribe = () => void;
 
@@ -70,6 +89,8 @@ export interface MessagingSession {
   disconnect(reason?: string): Promise<void>;
   logout(): Promise<void>;
   sendText(request: SendTextRequest): Promise<ProviderMessage>;
+  requestHistory(request: HistoryRequest): Promise<void>;
+  downloadMedia(remoteReference: string): Promise<Uint8Array>;
   subscribe(listener: MessagingEventListener): Unsubscribe;
   dispose(): void;
 }
