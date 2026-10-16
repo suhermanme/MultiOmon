@@ -21,6 +21,9 @@ export interface MessagingProjectionChange {
 
 export type MessagingProjectionListener = (change: MessagingProjectionChange) => void;
 
+export type PairingEvent = Extract<MessagingEvent, { type: 'pairing.code' | 'pairing.qr' }>;
+export type PairingEventListener = (event: PairingEvent) => void;
+
 interface SessionEntry {
   readonly session: MessagingSession;
   readonly managedSession: ProviderAccountSession;
@@ -43,6 +46,7 @@ export class MessagingService {
   readonly #repositories: RepositoryBundle;
   readonly #sessions = new Map<AccountId, SessionEntry>();
   readonly #listeners = new Set<MessagingProjectionListener>();
+  readonly #pairingListeners = new Set<PairingEventListener>();
 
   constructor(
     provider: MessagingProvider,
@@ -91,17 +95,53 @@ export class MessagingService {
     return () => this.#listeners.delete(listener);
   }
 
+  subscribePairing(listener: PairingEventListener): () => void {
+    this.#pairingListeners.add(listener);
+    return () => this.#pairingListeners.delete(listener);
+  }
+
+  hasAccountSession(accountId: AccountId): boolean {
+    return this.#sessions.has(accountId);
+  }
+
+  removeAccountSession(accountId: AccountId): void {
+    const entry = this.#sessions.get(accountId);
+    if (!entry) {
+      throw new MessagingApplicationError(
+        'missing-session',
+        `Messaging session for ${accountId} does not exist`,
+      );
+    }
+    entry.unsubscribeProjection();
+    entry.managedSession.dispose();
+    entry.session.dispose();
+    this.#sessions.delete(accountId);
+  }
+
   dispose(): void {
     for (const entry of this.#sessions.values()) {
       entry.unsubscribeProjection();
       entry.managedSession.dispose();
+      entry.session.dispose();
     }
     this.#sessions.clear();
     this.#listeners.clear();
+    this.#pairingListeners.clear();
   }
 
   #handleEvent(expectedAccountId: AccountId, event: MessagingEvent): void {
-    if (event.type === 'connection.changed' || event.type === 'pairing.code') return;
+    if (event.type === 'connection.changed') return;
+
+    if (event.type === 'pairing.code' || event.type === 'pairing.qr') {
+      if (event.accountId !== expectedAccountId) {
+        throw new MessagingApplicationError(
+          'event-account-mismatch',
+          `Provider pairing event for ${event.accountId} arrived on session ${expectedAccountId}`,
+        );
+      }
+      for (const listener of this.#pairingListeners) listener(event);
+      return;
+    }
     const eventAccountId =
       event.type === 'chat.upserted' ? event.chat.accountId : event.message.accountId;
     if (eventAccountId !== expectedAccountId) {

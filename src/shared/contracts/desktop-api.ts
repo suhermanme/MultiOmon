@@ -3,21 +3,53 @@ export const IPC_CHANNELS = {
   ping: 'system:ping',
   accountSnapshot: 'accounts:snapshot',
   accountSelect: 'accounts:select',
+  accountCreate: 'accounts:create',
+  accountRemove: 'accounts:remove',
+  accountLogout: 'accounts:logout',
+  accountPair: 'accounts:pair',
+  accountConnect: 'accounts:connect',
   accountChanged: 'accounts:changed',
+  pairingChanged: 'pairing:changed',
   chatList: 'messaging:chats',
   messageList: 'messaging:messages',
   messagingChanged: 'messaging:changed',
 } as const;
 
 export type AccountConnectionStateDto =
-  'idle' | 'needsPairing' | 'connecting' | 'connected' | 'disconnected' | 'failed';
+  | { readonly kind: 'idle'; readonly changedAt: number }
+  | { readonly kind: 'needsPairing'; readonly changedAt: number }
+  | { readonly kind: 'connecting'; readonly changedAt: number; readonly attempt: number }
+  | { readonly kind: 'connected'; readonly changedAt: number; readonly connectedAt: number }
+  | { readonly kind: 'disconnected'; readonly changedAt: number; readonly reason?: string }
+  | {
+      readonly kind: 'failed';
+      readonly changedAt: number;
+      readonly errorCode: string;
+      readonly message: string;
+    };
 
 export interface AccountSummaryDto {
   readonly id: string;
   readonly displayName: string;
   readonly avatarUrl?: string;
   readonly connectionState: AccountConnectionStateDto;
+  readonly phoneNumber?: string;
 }
+
+export interface CreateAccountRequestDto {
+  readonly displayName: string;
+  readonly phoneNumber?: string;
+}
+
+export type PairingUpdateDto =
+  | {
+      readonly accountId: string;
+      readonly kind: 'code';
+      readonly code: string;
+      readonly expiresAt: number;
+    }
+  | { readonly accountId: string; readonly kind: 'qr'; readonly payload: string }
+  | { readonly accountId: string; readonly kind: 'cleared' };
 
 export interface AccountSnapshotDto {
   readonly accounts: readonly AccountSummaryDto[];
@@ -67,7 +99,15 @@ export interface DesktopApi {
   readonly accounts: {
     readonly getSnapshot: () => Promise<AccountSnapshotDto>;
     readonly select: (accountId: string) => Promise<AccountSnapshotDto>;
+    readonly create: (request: CreateAccountRequestDto) => Promise<AccountSnapshotDto>;
+    readonly remove: (accountId: string) => Promise<AccountSnapshotDto>;
+    readonly logout: (accountId: string) => Promise<AccountSnapshotDto>;
+    readonly pair: (accountId: string) => Promise<void>;
+    readonly connect: (accountId: string) => Promise<void>;
     readonly subscribe: (listener: (snapshot: AccountSnapshotDto) => void) => () => void;
+  };
+  readonly pairing: {
+    readonly subscribe: (listener: (update: PairingUpdateDto) => void) => () => void;
   };
   readonly messaging: {
     readonly listChats: (accountId: string) => Promise<readonly ChatSummaryDto[]>;

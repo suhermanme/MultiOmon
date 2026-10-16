@@ -5,6 +5,7 @@ export interface Account {
   readonly displayName: string;
   readonly createdAt: number;
   readonly avatarUrl?: string;
+  readonly phoneNumber?: string;
 }
 
 export type AccountConnectionState =

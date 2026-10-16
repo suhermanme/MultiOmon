@@ -37,7 +37,7 @@ describe('whatsapp provider to messaging service integration', { timeout: 10000 
     };
     repositories.accounts.save(account);
 
-    const provider = new WhatsappMessagingProvider(authDir, () => ({}));
+    const provider = new WhatsappMessagingProvider(authDir, {});
     const service = new MessagingService(provider, database, repositories);
     const view = new MessagingView(repositories.chats, repositories.messages);
     const changes: MessagingProjectionChange[] = [];

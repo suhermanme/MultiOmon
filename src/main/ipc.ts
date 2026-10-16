@@ -1,16 +1,82 @@
 import { BrowserWindow, ipcMain } from 'electron';
 import type { AccountManager } from '../application/accounts/account-manager';
 import { toAccountSnapshotDto } from '../application/accounts/account-view';
+import type { AccountProvisioningService } from '../application/accounts/account-provisioning';
 import type { MessagingService } from '../application/messaging/messaging-service';
-import type { MessagingView } from '../application/messaging/messaging-view';
-import { createAccountId, createChatId } from '../domain';
-import { IPC_CHANNELS, type RuntimeInfo } from '../shared/contracts/desktop-api';
+import { toPairingUpdateDto, type MessagingView } from '../application/messaging/messaging-view';
+import { createAccountId, createChatId, type AccountId } from '../domain';
+import {
+  IPC_CHANNELS,
+  type AccountConnectionStateDto,
+  type AccountSnapshotDto,
+  type RuntimeInfo,
+} from '../shared/contracts/desktop-api';
 
-export function registerIpcHandlers(
-  accountManager: AccountManager,
-  messagingService: MessagingService,
-  messagingView: MessagingView,
-): () => void {
+export interface IpcServices {
+  readonly accountManager: AccountManager;
+  readonly messagingService: MessagingService;
+  readonly messagingView: MessagingView;
+  readonly provisioning: AccountProvisioningService;
+}
+
+function readAccountId(accountId: unknown): AccountId {
+  if (typeof accountId !== 'string') throw new TypeError('Account ID must be a string');
+  return createAccountId(accountId);
+}
+
+function readAccountRequest(request: unknown): { displayName: string; phoneNumber?: string } {
+  if (typeof request !== 'object' || request === null) {
+    throw new TypeError('Account request must be an object');
+  }
+  const { displayName, phoneNumber } = request as {
+    displayName?: unknown;
+    phoneNumber?: unknown;
+  };
+  if (typeof displayName !== 'string') throw new TypeError('Account name must be a string');
+  if (phoneNumber !== undefined && typeof phoneNumber !== 'string') {
+    throw new TypeError('Phone number must be a string');
+  }
+  return { displayName, ...(typeof phoneNumber === 'string' ? { phoneNumber } : {}) };
+}
+
+function sendToWindows(channel: string, payload: unknown): void {
+  for (const window of BrowserWindow.getAllWindows()) {
+    window.webContents.send(channel, payload);
+  }
+}
+
+const CLOSED_PAIRING_STATES: readonly AccountConnectionStateDto['kind'][] = [
+  'connected',
+  'disconnected',
+  'failed',
+];
+
+export function registerIpcHandlers(services: IpcServices): () => void {
+  const { accountManager, messagingService, messagingView, provisioning } = services;
+  const pairingStates = new Map<string, AccountConnectionStateDto['kind']>();
+
+  const publishAccounts = (snapshot: AccountSnapshotDto): void => {
+    sendToWindows(IPC_CHANNELS.accountChanged, snapshot);
+
+    const liveAccountIds = new Set<string>();
+    for (const account of snapshot.accounts) {
+      liveAccountIds.add(account.id);
+      const previous = pairingStates.get(account.id);
+      pairingStates.set(account.id, account.connectionState.kind);
+      // A pairing panel is only worth closing once it was actually open: pairing
+      // ends when the account connects, fails, or drops the socket.
+      if (previous === undefined || previous === account.connectionState.kind) continue;
+      if (CLOSED_PAIRING_STATES.includes(account.connectionState.kind)) {
+        sendToWindows(IPC_CHANNELS.pairingChanged, { accountId: account.id, kind: 'cleared' });
+      }
+    }
+    for (const accountId of [...pairingStates.keys()]) {
+      if (liveAccountIds.has(accountId)) continue;
+      pairingStates.delete(accountId);
+      sendToWindows(IPC_CHANNELS.pairingChanged, { accountId, kind: 'cleared' });
+    }
+  };
+
   ipcMain.handle(IPC_CHANNELS.runtimeInfo, (): RuntimeInfo => {
     return {
       platform: process.platform,
@@ -29,26 +95,46 @@ export function registerIpcHandlers(
   });
 
   ipcMain.handle(IPC_CHANNELS.accountSelect, (_event, accountId: unknown) => {
-    if (typeof accountId !== 'string') throw new TypeError('Account ID must be a string');
-    accountManager.selectAccount(createAccountId(accountId));
+    accountManager.selectAccount(readAccountId(accountId));
     return toAccountSnapshotDto(accountManager.getSnapshot());
   });
 
+  ipcMain.handle(IPC_CHANNELS.accountCreate, (_event, request: unknown) => {
+    provisioning.createAccount(readAccountRequest(request));
+    return toAccountSnapshotDto(accountManager.getSnapshot());
+  });
+
+  ipcMain.handle(IPC_CHANNELS.accountRemove, async (_event, accountId: unknown) => {
+    await provisioning.removeAccount(readAccountId(accountId));
+    return toAccountSnapshotDto(accountManager.getSnapshot());
+  });
+
+  ipcMain.handle(IPC_CHANNELS.accountLogout, async (_event, accountId: unknown) => {
+    await provisioning.logoutAccount(readAccountId(accountId));
+    return toAccountSnapshotDto(accountManager.getSnapshot());
+  });
+
+  ipcMain.handle(IPC_CHANNELS.accountPair, async (_event, accountId: unknown) => {
+    await provisioning.startPairing(readAccountId(accountId));
+  });
+
+  ipcMain.handle(IPC_CHANNELS.accountConnect, async (_event, accountId: unknown) => {
+    await provisioning.connectAccount(readAccountId(accountId));
+  });
+
   ipcMain.handle(IPC_CHANNELS.chatList, (_event, accountId: unknown) => {
-    if (typeof accountId !== 'string') throw new TypeError('Account ID must be a string');
-    return messagingView.listChats(createAccountId(accountId));
+    return messagingView.listChats(readAccountId(accountId));
   });
 
   ipcMain.handle(
     IPC_CHANNELS.messageList,
     (_event, accountId: unknown, chatId: unknown, limit: unknown) => {
-      if (typeof accountId !== 'string') throw new TypeError('Account ID must be a string');
       if (typeof chatId !== 'string') throw new TypeError('Chat ID must be a string');
       if (limit !== undefined && typeof limit !== 'number') {
         throw new TypeError('Message limit must be a number');
       }
       return messagingView.listMessages(
-        createAccountId(accountId),
+        readAccountId(accountId),
         createChatId(chatId),
         limit ?? 50,
       );
@@ -56,24 +142,29 @@ export function registerIpcHandlers(
   );
 
   const unsubscribe = accountManager.subscribe((snapshot) => {
-    const dto = toAccountSnapshotDto(snapshot);
-    for (const window of BrowserWindow.getAllWindows()) {
-      window.webContents.send(IPC_CHANNELS.accountChanged, dto);
-    }
+    publishAccounts(toAccountSnapshotDto(snapshot));
   });
   const unsubscribeMessaging = messagingService.subscribe((change) => {
-    for (const window of BrowserWindow.getAllWindows()) {
-      window.webContents.send(IPC_CHANNELS.messagingChanged, change);
-    }
+    sendToWindows(IPC_CHANNELS.messagingChanged, change);
+  });
+  const unsubscribePairing = messagingService.subscribePairing((event) => {
+    sendToWindows(IPC_CHANNELS.pairingChanged, toPairingUpdateDto(event));
   });
 
   return () => {
     unsubscribe();
     unsubscribeMessaging();
+    unsubscribePairing();
+    pairingStates.clear();
     ipcMain.removeHandler(IPC_CHANNELS.runtimeInfo);
     ipcMain.removeHandler(IPC_CHANNELS.ping);
     ipcMain.removeHandler(IPC_CHANNELS.accountSnapshot);
     ipcMain.removeHandler(IPC_CHANNELS.accountSelect);
+    ipcMain.removeHandler(IPC_CHANNELS.accountCreate);
+    ipcMain.removeHandler(IPC_CHANNELS.accountRemove);
+    ipcMain.removeHandler(IPC_CHANNELS.accountLogout);
+    ipcMain.removeHandler(IPC_CHANNELS.accountPair);
+    ipcMain.removeHandler(IPC_CHANNELS.accountConnect);
     ipcMain.removeHandler(IPC_CHANNELS.chatList);
     ipcMain.removeHandler(IPC_CHANNELS.messageList);
   };

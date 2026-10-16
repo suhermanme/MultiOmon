@@ -9,14 +9,26 @@ import type { AccountSnapshotDto, DesktopApi } from '../../src/shared/contracts/
 const initialSnapshot: AccountSnapshotDto = {
   activeAccountId: 'personal',
   accounts: [
-    { id: 'personal', displayName: 'Personal', connectionState: 'connected' },
-    { id: 'work', displayName: 'Work', connectionState: 'connected' },
-    { id: 'community', displayName: 'Community', connectionState: 'connected' },
+    {
+      id: 'personal',
+      displayName: 'Personal',
+      connectionState: { kind: 'connected', changedAt: 0, connectedAt: 0 },
+    },
+    {
+      id: 'work',
+      displayName: 'Work',
+      connectionState: { kind: 'connected', changedAt: 0, connectedAt: 0 },
+    },
+    {
+      id: 'community',
+      displayName: 'Community',
+      connectionState: { kind: 'connected', changedAt: 0, connectedAt: 0 },
+    },
   ],
 };
 
 describe('renderer shell', () => {
-  let select: ReturnType<typeof vi.fn<DesktopApi['accounts']['select']>>;
+  let select: DesktopApi['accounts']['select'];
 
   beforeEach(() => {
     useAccountStore.setState({
@@ -43,6 +55,11 @@ describe('renderer shell', () => {
         accounts: {
           getSnapshot: vi.fn().mockResolvedValue(initialSnapshot),
           select,
+          create: vi.fn().mockResolvedValue(initialSnapshot),
+          remove: vi.fn().mockResolvedValue(initialSnapshot),
+          logout: vi.fn().mockResolvedValue(initialSnapshot),
+          pair: vi.fn().mockResolvedValue(undefined),
+          connect: vi.fn().mockResolvedValue(undefined),
           subscribe: vi.fn().mockReturnValue(vi.fn()),
         },
         messaging: {
@@ -73,6 +90,9 @@ describe('renderer shell', () => {
               },
             ]),
           ),
+          subscribe: vi.fn().mockReturnValue(vi.fn()),
+        },
+        pairing: {
           subscribe: vi.fn().mockReturnValue(vi.fn()),
         },
       } satisfies DesktopApi,

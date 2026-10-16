@@ -4,7 +4,9 @@ import type {
   ChatSummaryDto,
   MessageContentDto,
   MessageDto,
+  PairingUpdateDto,
 } from '../../shared/contracts/desktop-api';
+import type { PairingEvent } from './messaging-service';
 
 function toMessageContentDto(content: MessageContent): MessageContentDto {
   switch (content.kind) {
@@ -29,6 +31,18 @@ function toMessageDto(message: Message): MessageDto {
     sentAt: message.sentAt,
     content: toMessageContentDto(message.content),
   };
+}
+
+export function toPairingUpdateDto(event: PairingEvent): PairingUpdateDto {
+  if (event.type === 'pairing.code') {
+    return {
+      accountId: event.accountId,
+      kind: 'code',
+      code: event.code,
+      expiresAt: event.expiresAt,
+    };
+  }
+  return { accountId: event.accountId, kind: 'qr', payload: event.payload };
 }
 
 export class MessagingView {

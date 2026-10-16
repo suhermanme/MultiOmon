@@ -81,6 +81,13 @@ export const migrations: readonly Migration[] = [
         ON messages(account_id, chat_id, sent_at DESC, id DESC);
     `,
   },
+  {
+    version: 3,
+    name: 'add_account_phone_number',
+    sql: `
+      ALTER TABLE accounts ADD COLUMN phone_number TEXT;
+    `,
+  },
 ];
 
 interface MigrationRow {

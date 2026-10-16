@@ -31,9 +31,19 @@ export class ProviderAccountSession implements ManagedAccountSession {
     this.#state = toAccountState(session.getConnectionState());
     this.#unsubscribe = session.subscribe((event) => {
       if (event.type !== 'connection.changed') return;
-      this.#state = transitionConnectionState(this.#state, toAccountState(event.state));
-      for (const listener of this.#listeners) listener(this.#state);
+      this.#applyState(toAccountState(event.state));
     });
+  }
+
+  #applyState(next: AccountConnectionState): void {
+    // Providers may re-announce their current state (retry ticks, re-pairing requests).
+    // Same-kind updates refresh `changedAt` instead of being rejected as transitions.
+    if (this.#state.kind !== next.kind) {
+      this.#state = transitionConnectionState(this.#state, next);
+    } else {
+      this.#state = next;
+    }
+    for (const listener of this.#listeners) listener(this.#state);
   }
 
   getState(): AccountConnectionState {
@@ -46,6 +56,14 @@ export class ProviderAccountSession implements ManagedAccountSession {
 
   disconnect(reason?: string): Promise<void> {
     return this.#session.disconnect(reason);
+  }
+
+  startPairing(): Promise<void> {
+    return this.#session.startPairing();
+  }
+
+  logout(): Promise<void> {
+    return this.#session.logout();
   }
 
   subscribe(listener: AccountSessionListener): () => void {

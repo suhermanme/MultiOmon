@@ -20,7 +20,7 @@ import {
   migrations,
   SqliteDatabase,
 } from '../../src/infrastructure/database';
-import { seedMockAccounts } from '../../src/main/mock-accounts';
+import { seedMockAccounts } from '../../src/main/bootstrap';
 
 function account(id: string): Account {
   return { id: createAccountId(id), displayName: `Account ${id}`, createdAt: 100 };
@@ -76,12 +76,12 @@ describe('SQLite persistence', () => {
   });
 
   it('creates and reapplies versioned migrations safely', () => {
-    expect(getAppliedMigrationVersions(database.connection)).toEqual([1, 2]);
+    expect(getAppliedMigrationVersions(database.connection)).toEqual([1, 2, 3]);
 
     database.close();
     database = SqliteDatabase.open(filePath);
 
-    expect(getAppliedMigrationVersions(database.connection)).toEqual([1, 2]);
+    expect(getAppliedMigrationVersions(database.connection)).toEqual([1, 2, 3]);
   });
 
   it('upgrades an existing version-one database without destroying its data', () => {
@@ -108,10 +108,10 @@ describe('SQLite persistence', () => {
     const upgraded = SqliteDatabase.open(legacyPath);
     const upgradedRepositories = createRepositories(upgraded);
 
-    expect(getAppliedMigrationVersions(upgraded.connection)).toEqual([1, 2]);
-    expect(upgradedRepositories.accounts.list().map(({ displayName }) => displayName)).toEqual([
-      'Legacy account',
-    ]);
+    expect(getAppliedMigrationVersions(upgraded.connection)).toEqual([1, 2, 3]);
+    const legacyAccount = upgradedRepositories.accounts.list()[0];
+    expect(legacyAccount?.displayName).toBe('Legacy account');
+    expect(legacyAccount?.phoneNumber).toBeUndefined();
     upgraded.close();
   });
 
@@ -131,11 +131,21 @@ describe('SQLite persistence', () => {
     repositories.chats.save(savedChat);
     repositories.messages.insert(savedMessage);
 
+    const accountWithPhone: Account = {
+      ...savedAccount,
+      id: createAccountId('persistent-phone'),
+      displayName: 'Persistent Phone',
+      phoneNumber: '+33612345678',
+    };
+    repositories.accounts.save(accountWithPhone);
+
     database.close();
     database = SqliteDatabase.open(filePath);
     repositories = createRepositories(database);
 
     expect(repositories.accounts.getById(savedAccount.id)).toEqual(savedAccount);
+    expect(repositories.accounts.getById(accountWithPhone.id)).toEqual(accountWithPhone);
+    expect(repositories.accounts.getById(savedAccount.id)?.phoneNumber).toBeUndefined();
     expect(repositories.contacts.listByAccount(savedAccount.id)).toHaveLength(1);
     expect(repositories.chats.getById(savedAccount.id, savedChat.id)).toEqual(savedChat);
     expect(repositories.messages.getById(savedAccount.id, savedMessage.id)).toEqual(savedMessage);

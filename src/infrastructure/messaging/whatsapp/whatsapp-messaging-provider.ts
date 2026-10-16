@@ -5,30 +5,40 @@ import {
 import type { AccountId } from '../../../domain';
 import {
   WhatsappMessagingSession,
+  type WhatsappReconnectOptions,
   type WhatsappSessionOptions,
 } from './whatsapp-messaging-session';
 
-export type WhatsappSessionOptionsFactory = (accountId: AccountId) => WhatsappSessionOptions;
+/** Resolves the phone number on record for an account, if any. */
+export type WhatsappPhoneLookup = (accountId: AccountId) => string | undefined;
+
+export interface WhatsappProviderOptions {
+  readonly phoneLookup?: WhatsappPhoneLookup;
+  readonly reconnect?: WhatsappReconnectOptions;
+}
 
 export class WhatsappMessagingProvider implements MessagingProvider {
   readonly #sessions = new Map<AccountId, WhatsappMessagingSession>();
   readonly #authDir: string;
-  readonly #optionsFactory: WhatsappSessionOptionsFactory;
+  readonly #phoneLookup?: WhatsappPhoneLookup;
+  readonly #reconnect?: WhatsappReconnectOptions;
 
-  constructor(authDir: string, optionsFactory: WhatsappSessionOptionsFactory = () => ({})) {
+  constructor(authDir: string, options: WhatsappProviderOptions = {}) {
     this.#authDir = authDir;
-    this.#optionsFactory = optionsFactory;
+    this.#phoneLookup = options.phoneLookup;
+    this.#reconnect = options.reconnect;
   }
 
   createSession(accountId: AccountId): WhatsappMessagingSession {
     if (this.#sessions.has(accountId)) {
       throw new ProviderError(accountId, 'duplicate-session', 'Session already exists');
     }
-    const session = new WhatsappMessagingSession(
-      accountId,
-      this.#authDir,
-      this.#optionsFactory(accountId),
-    );
+    const phoneNumber = this.#phoneLookup?.(accountId);
+    const sessionOptions: WhatsappSessionOptions = {
+      ...(phoneNumber === undefined ? {} : { phoneNumber }),
+      ...(this.#reconnect === undefined ? {} : { reconnect: this.#reconnect }),
+    };
+    const session = new WhatsappMessagingSession(accountId, this.#authDir, sessionOptions);
     this.#sessions.set(accountId, session);
     return session;
   }

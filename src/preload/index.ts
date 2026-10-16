@@ -2,10 +2,12 @@ import { contextBridge, ipcRenderer } from 'electron';
 import {
   IPC_CHANNELS,
   type AccountSnapshotDto,
-  type DesktopApi,
   type ChatSummaryDto,
+  type CreateAccountRequestDto,
+  type DesktopApi,
   type MessageDto,
   type MessagingChangeDto,
+  type PairingUpdateDto,
   type RuntimeInfo,
 } from '../shared/contracts/desktop-api';
 
@@ -17,12 +19,31 @@ const desktopApi: DesktopApi = Object.freeze({
       ipcRenderer.invoke(IPC_CHANNELS.accountSnapshot) as Promise<AccountSnapshotDto>,
     select: (accountId: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.accountSelect, accountId) as Promise<AccountSnapshotDto>,
+    create: (request: CreateAccountRequestDto) =>
+      ipcRenderer.invoke(IPC_CHANNELS.accountCreate, request) as Promise<AccountSnapshotDto>,
+    remove: (accountId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.accountRemove, accountId) as Promise<AccountSnapshotDto>,
+    logout: (accountId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.accountLogout, accountId) as Promise<AccountSnapshotDto>,
+    pair: (accountId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.accountPair, accountId) as Promise<void>,
+    connect: (accountId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.accountConnect, accountId) as Promise<void>,
     subscribe: (listener: (snapshot: AccountSnapshotDto) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, snapshot: AccountSnapshotDto): void => {
         listener(snapshot);
       };
       ipcRenderer.on(IPC_CHANNELS.accountChanged, handler);
       return () => ipcRenderer.removeListener(IPC_CHANNELS.accountChanged, handler);
+    },
+  }),
+  pairing: Object.freeze({
+    subscribe: (listener: (update: PairingUpdateDto) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, update: PairingUpdateDto): void => {
+        listener(update);
+      };
+      ipcRenderer.on(IPC_CHANNELS.pairingChanged, handler);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.pairingChanged, handler);
     },
   }),
   messaging: Object.freeze({

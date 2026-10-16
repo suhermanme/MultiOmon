@@ -9,8 +9,11 @@ export type AccountSessionListener = (state: AccountConnectionState) => void;
 export interface ManagedAccountSession {
   readonly accountId: AccountId;
   getState(): AccountConnectionState;
+  startPairing(): Promise<void>;
   connect(): Promise<void>;
   disconnect(reason?: string): Promise<void>;
+  logout(): Promise<void>;
+  dispose(): void;
   subscribe(listener: AccountSessionListener): () => void;
 }
 
@@ -33,6 +36,16 @@ export class InMemoryAccountSession implements ManagedAccountSession {
 
   getState(): AccountConnectionState {
     return this.#state;
+  }
+
+  async startPairing(): Promise<void> {
+    if (this.#state.kind === 'connected' || this.#state.kind === 'connecting') {
+      await this.disconnect('pairing-requested');
+    }
+    if (this.#state.kind !== 'needsPairing') {
+      this.#setState({ kind: 'needsPairing', changedAt: Date.now() });
+    }
+    this.#attempt = 0;
   }
 
   async connect(): Promise<void> {
@@ -60,6 +73,21 @@ export class InMemoryAccountSession implements ManagedAccountSession {
     if (this.#state.kind === 'disconnected') return;
     this.#setState({ kind: 'disconnected', changedAt: Date.now(), reason });
     await Promise.resolve();
+  }
+
+  async logout(): Promise<void> {
+    if (this.#state.kind !== 'idle' && this.#state.kind !== 'disconnected') {
+      this.#setState({ kind: 'disconnected', changedAt: Date.now(), reason: 'logged-out' });
+    }
+    if (this.#state.kind !== 'needsPairing') {
+      this.#setState({ kind: 'needsPairing', changedAt: Date.now() });
+    }
+    this.#attempt = 0;
+    await Promise.resolve();
+  }
+
+  dispose(): void {
+    this.#listeners.clear();
   }
 
   simulateFailure(errorCode: string, message: string): void {

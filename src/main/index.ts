@@ -1,16 +1,14 @@
 import { join } from 'node:path';
 import { electronApp, is, optimizer } from '@electron-toolkit/utils';
 import { app, BrowserWindow, shell } from 'electron';
-import { MessagingService } from '../application/messaging/messaging-service';
 import { MessagingView } from '../application/messaging/messaging-view';
 import { createRepositories, SqliteDatabase } from '../infrastructure/database';
-import { registerIpcHandlers } from './ipc';
 import {
-  createMockAccountManager,
+  bootstrapApplication,
   createMockMessagingProvider,
   createWhatsappMessagingProvider,
-  seedMockAccounts,
-} from './mock-accounts';
+} from './bootstrap';
+import { registerIpcHandlers } from './ipc';
 import { createWindowOptions } from './window-options';
 
 function createMainWindow(): BrowserWindow {
@@ -39,21 +37,26 @@ void app.whenReady().then(async () => {
     join(app.getPath('userData'), 'database', 'multiomon.sqlite'),
   );
   const repositories = createRepositories(database);
-  seedMockAccounts(database, repositories);
-
   const useWhatsapp = process.env.WHATSAPP_PROVIDER === '1';
   const messagingProvider = useWhatsapp
-    ? createWhatsappMessagingProvider(join(app.getPath('userData'), 'authInfo'))
+    ? createWhatsappMessagingProvider(
+        join(app.getPath('userData'), 'authInfo'),
+        repositories.accounts,
+      )
     : createMockMessagingProvider();
-
-  const messagingService = new MessagingService(messagingProvider, database, repositories);
+  const { messagingService, accountManager, provisioning } = await bootstrapApplication({
+    transactionRunner: database,
+    repositories,
+    messagingProvider,
+    useWhatsapp,
+  });
   const messagingView = new MessagingView(repositories.chats, repositories.messages);
-  const accountManager = await createMockAccountManager(repositories.accounts, messagingService);
-  const unregisterIpcHandlers = registerIpcHandlers(
+  const unregisterIpcHandlers = registerIpcHandlers({
     accountManager,
     messagingService,
     messagingView,
-  );
+    provisioning,
+  });
   app.once('before-quit', () => {
     unregisterIpcHandlers();
     messagingService.dispose();

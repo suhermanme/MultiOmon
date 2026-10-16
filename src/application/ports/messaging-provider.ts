@@ -45,6 +45,11 @@ export type MessagingEvent =
       readonly code: string;
       readonly expiresAt: number;
     }
+  | {
+      readonly type: 'pairing.qr';
+      readonly accountId: AccountId;
+      readonly payload: string;
+    }
   | { readonly type: 'chat.upserted'; readonly chat: ProviderChat }
   | { readonly type: 'message.upserted'; readonly message: ProviderMessage };
 
@@ -66,6 +71,7 @@ export interface MessagingSession {
   logout(): Promise<void>;
   sendText(request: SendTextRequest): Promise<ProviderMessage>;
   subscribe(listener: MessagingEventListener): Unsubscribe;
+  dispose(): void;
 }
 
 export interface MessagingProvider {

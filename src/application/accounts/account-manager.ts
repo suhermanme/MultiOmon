@@ -55,6 +55,7 @@ export class AccountManager {
     const entry = this.#getEntry(accountId);
     await entry.session.disconnect('account-removed');
     entry.unsubscribe();
+    entry.session.dispose();
     this.#entries.delete(accountId);
 
     if (this.#activeAccountId === accountId) {
@@ -77,8 +78,20 @@ export class AccountManager {
     await this.#getEntry(accountId).session.disconnect(reason);
   }
 
+  async startPairing(accountId: AccountId): Promise<void> {
+    await this.#getEntry(accountId).session.startPairing();
+  }
+
+  async logoutAccount(accountId: AccountId): Promise<void> {
+    await this.#getEntry(accountId).session.logout();
+  }
+
   async connectAll(): Promise<readonly PromiseSettledResult<void>[]> {
     return Promise.allSettled([...this.#entries.values()].map(({ session }) => session.connect()));
+  }
+
+  hasAccount(accountId: AccountId): boolean {
+    return this.#entries.has(accountId);
   }
 
   getSnapshot(): AccountManagerSnapshot {

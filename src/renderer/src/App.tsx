@@ -1,18 +1,22 @@
 import { useEffect, useState } from 'react';
+import QRCode from 'qrcode';
 import type {
   AccountConnectionStateDto,
   AccountSummaryDto,
+  CreateAccountRequestDto,
+  PairingUpdateDto,
   RuntimeInfo,
 } from '../../shared/contracts/desktop-api';
 import { useAccountStore } from './account-store';
 import { useMessagingStore } from './messaging-store';
+import { subscribePairing, usePairingStore } from './pairing-store';
 
 type BridgeStatus =
   | { readonly kind: 'checking' }
   | { readonly kind: 'ready'; readonly runtime: RuntimeInfo }
   | { readonly kind: 'failed' };
 
-const statusLabels: Readonly<Record<AccountConnectionStateDto, string>> = {
+const statusLabels: Readonly<Record<AccountConnectionStateDto['kind'], string>> = {
   idle: 'Idle',
   needsPairing: 'Needs pairing',
   connecting: 'Connecting',
@@ -36,7 +40,7 @@ interface AccountButtonProps {
 }
 
 function AccountButton({ account, active, onSelect }: AccountButtonProps): React.JSX.Element {
-  const status = statusLabels[account.connectionState];
+  const status = statusLabels[account.connectionState.kind];
 
   return (
     <button
@@ -50,15 +54,233 @@ function AccountButton({ account, active, onSelect }: AccountButtonProps): React
       <span className="account-avatar" aria-hidden="true">
         {initials(account.displayName)}
       </span>
-      <span className={`account-status status-${account.connectionState}`} aria-hidden="true" />
+      <span className="account-copy">
+        <strong>{account.displayName}</strong>
+        {account.phoneNumber ? <span>{account.phoneNumber}</span> : null}
+      </span>
+      <span
+        className={`account-status status-${account.connectionState.kind}`}
+        aria-hidden="true"
+      />
     </button>
+  );
+}
+
+interface AddAccountFormProps {
+  readonly busy: boolean;
+  readonly onCreate: (request: CreateAccountRequestDto) => Promise<boolean>;
+}
+
+function AddAccountForm({ busy, onCreate }: AddAccountFormProps): React.JSX.Element {
+  const [displayName, setDisplayName] = useState('');
+  const [phoneNumber, setPhoneNumber] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const name = displayName.trim();
+  const phone = phoneNumber.trim();
+
+  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>): Promise<void> => {
+    event.preventDefault();
+    if (name === '' || submitting) return;
+    setSubmitting(true);
+    const created = await onCreate(
+      phone === '' ? { displayName: name } : { displayName: name, phoneNumber: phone },
+    );
+    setSubmitting(false);
+    if (!created) return;
+    setDisplayName('');
+    setPhoneNumber('');
+  };
+
+  return (
+    <form className="add-account-form" onSubmit={(event) => void handleSubmit(event)}>
+      <label htmlFor="new-account-name">New account</label>
+      <input
+        id="new-account-name"
+        className="text-input"
+        value={displayName}
+        placeholder="Personal"
+        onChange={(event) => setDisplayName(event.target.value)}
+      />
+      <label htmlFor="new-account-phone">Phone (optional)</label>
+      <input
+        id="new-account-phone"
+        className="text-input"
+        value={phoneNumber}
+        placeholder="+15551234567"
+        inputMode="tel"
+        onChange={(event) => setPhoneNumber(event.target.value)}
+      />
+      <button
+        className="add-account-submit"
+        type="submit"
+        disabled={name === '' || submitting || busy}
+      >
+        {submitting ? 'Adding…' : 'Add account'}
+      </button>
+    </form>
+  );
+}
+
+interface AccountActionsProps {
+  readonly account: AccountSummaryDto;
+  readonly busy: boolean;
+  readonly onPair: (accountId: string) => void;
+  readonly onConnect: (accountId: string) => void;
+  readonly onLogout: (accountId: string) => void;
+  readonly onRemove: (accountId: string) => void;
+}
+
+function AccountActions({
+  account,
+  busy,
+  onPair,
+  onConnect,
+  onLogout,
+  onRemove,
+}: AccountActionsProps): React.JSX.Element {
+  const [confirmingRemove, setConfirmingRemove] = useState(false);
+  const { connectionState } = account;
+  const connected = connectionState.kind === 'connected';
+  const connecting = connectionState.kind === 'connecting';
+  const hasSession = connected || connecting || connectionState.kind === 'needsPairing';
+
+  return (
+    <div className="account-actions" aria-label={`Account actions for ${account.displayName}`}>
+      <button
+        className="action-button"
+        type="button"
+        disabled={busy || connecting || connected}
+        onClick={() => void onPair(account.id)}
+      >
+        Pair
+      </button>
+      {connected ? null : (
+        <button
+          className="action-button"
+          type="button"
+          disabled={busy || connecting}
+          onClick={() => void onConnect(account.id)}
+        >
+          Connect
+        </button>
+      )}
+      <button
+        className="action-button"
+        type="button"
+        disabled={busy || !hasSession}
+        onClick={() => void onLogout(account.id)}
+      >
+        Log out
+      </button>
+      {confirmingRemove ? (
+        <span className="remove-confirm">
+          <span className="remove-confirm-label">Remove {account.displayName}?</span>
+          <button
+            className="action-button action-danger"
+            type="button"
+            onClick={() => {
+              setConfirmingRemove(false);
+              onRemove(account.id);
+            }}
+          >
+            Confirm remove
+          </button>
+          <button
+            className="action-button action-ghost"
+            type="button"
+            onClick={() => setConfirmingRemove(false)}
+          >
+            Cancel
+          </button>
+        </span>
+      ) : (
+        <button
+          className="action-button action-danger"
+          type="button"
+          disabled={busy}
+          onClick={() => setConfirmingRemove(true)}
+        >
+          Remove
+        </button>
+      )}
+    </div>
+  );
+}
+
+function PairingQr({ payload }: { readonly payload: string }): React.JSX.Element {
+  const [dataUrl, setDataUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    QRCode.toString(payload, { type: 'svg' })
+      .then((svg) => {
+        if (active) setDataUrl(`data:image/svg+xml;base64,${btoa(svg)}`);
+      })
+      .catch(() => {
+        if (active) setDataUrl(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [payload]);
+
+  if (dataUrl === null) {
+    return (
+      <div className="pairing-qr pairing-qr-pending" role="status">
+        Preparing QR code…
+      </div>
+    );
+  }
+
+  return (
+    <img className="pairing-qr" src={dataUrl} alt="Pairing QR code" width={220} height={220} />
+  );
+}
+
+interface PairingPanelProps {
+  readonly account: AccountSummaryDto;
+  readonly update: PairingUpdateDto;
+}
+
+function PairingPanel({ account, update }: PairingPanelProps): React.JSX.Element | null {
+  if (update.kind === 'cleared' || account.connectionState.kind === 'connected') return null;
+
+  return (
+    <section className="pairing-panel" aria-label={`Pairing for ${account.displayName}`}>
+      <span className="pairing-title">Pair {account.displayName}</span>
+      {update.kind === 'qr' ? (
+        <div className="pairing-qr-block">
+          <PairingQr key={update.payload} payload={update.payload} />
+          <p>Scan this code with WhatsApp on the phone that owns this account.</p>
+        </div>
+      ) : (
+        <div className="pairing-code-block">
+          <strong className="pairing-code">{update.code}</strong>
+          <time className="pairing-expiry" dateTime={new Date(update.expiresAt).toISOString()}>
+            Expires {new Date(update.expiresAt).toLocaleString()}
+          </time>
+        </div>
+      )}
+    </section>
   );
 }
 
 export function App(): React.JSX.Element {
   const [bridgeStatus, setBridgeStatus] = useState<BridgeStatus>({ kind: 'checking' });
-  const { snapshot, loading, error, applySnapshot, setLoadError, selectAccount } =
-    useAccountStore();
+  const {
+    snapshot,
+    loading,
+    error,
+    pendingAction,
+    applySnapshot,
+    setLoadError,
+    selectAccount,
+    createAccount,
+    removeAccount,
+    logoutAccount,
+    pairAccount,
+    connectAccount,
+  } = useAccountStore();
   const {
     chats,
     selectedChatId,
@@ -70,6 +292,9 @@ export function App(): React.JSX.Element {
   } = useMessagingStore();
   const activeAccount =
     snapshot.accounts.find((account) => account.id === snapshot.activeAccountId) ?? null;
+  const pairingUpdate = usePairingStore((state) =>
+    activeAccount ? state.updates[activeAccount.id] : undefined,
+  );
 
   useEffect(() => {
     let active = true;
@@ -79,6 +304,7 @@ export function App(): React.JSX.Element {
     const unsubscribeMessaging = window.multiomon.messaging.subscribe((change) => {
       if (active) void useMessagingStore.getState().refresh(change);
     });
+    const unsubscribePairing = subscribePairing();
 
     Promise.all([
       window.multiomon.ping(),
@@ -100,6 +326,7 @@ export function App(): React.JSX.Element {
       active = false;
       unsubscribe();
       unsubscribeMessaging();
+      unsubscribePairing();
     };
   }, [applySnapshot, setLoadError]);
 
@@ -154,15 +381,7 @@ export function App(): React.JSX.Element {
               />
             ))}
           </div>
-          <button
-            className="add-account"
-            type="button"
-            aria-label="Add account (available in a later milestone)"
-            title="Account pairing arrives in a later milestone"
-            disabled
-          >
-            +
-          </button>
+          <AddAccountForm busy={pendingAction !== null} onCreate={createAccount} />
         </aside>
 
         <section className="conversation-list" aria-label="Conversations">
@@ -172,11 +391,26 @@ export function App(): React.JSX.Element {
               <h1>{activeAccount?.displayName ?? (loading ? 'Loading…' : 'No account')}</h1>
             </div>
             {activeAccount && (
-              <span className={`connection-badge badge-${activeAccount.connectionState}`}>
-                {statusLabels[activeAccount.connectionState]}
+              <span className={`connection-badge badge-${activeAccount.connectionState.kind}`}>
+                {statusLabels[activeAccount.connectionState.kind]}
               </span>
             )}
           </div>
+          {activeAccount && (
+            <AccountActions
+              key={activeAccount.id}
+              account={activeAccount}
+              busy={pendingAction !== null}
+              onPair={(accountId) => void pairAccount(accountId)}
+              onConnect={(accountId) => void connectAccount(accountId)}
+              onLogout={(accountId) => void logoutAccount(accountId)}
+              onRemove={(accountId) => void removeAccount(accountId)}
+            />
+          )}
+
+          {activeAccount && pairingUpdate ? (
+            <PairingPanel account={activeAccount} update={pairingUpdate} />
+          ) : null}
 
           {(error ?? messagingError) ? (
             <div className="account-error" role="alert">

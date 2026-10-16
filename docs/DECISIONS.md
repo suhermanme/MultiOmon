@@ -178,3 +178,106 @@ lifetimes to transport lifetimes.
 Consequences:
 Repeated protocol messages become silent no-op inserts, renderer refreshes always observe committed
 state, and provider events require explicit domain-to-persistence mapping.
+
+## ADR-014 — Baileys is loaded lazily inside the WhatsApp adapter only
+
+Decision:
+`@whiskeysockets/baileys` is the WhatsApp transport. It is reached through a single lazy
+`await import()` inside `src/infrastructure/messaging/whatsapp/whatsapp-messaging-session.ts`. Other
+files in that directory may use type-only imports, and no Baileys value or type may enter
+`src/domain`, `src/application`, `src/shared`, or the renderer.
+
+Reason:
+Baileys is a large protocol-specific dependency whose surface shifts between releases: there is no
+chat store on the socket, events exist only on `socket.ev`, disconnect errors are `@hapi/boom` Booms,
+and `sendMessage` resolves to a single `WebMessageInfo`. Loading it on first WhatsApp use keeps it out
+of the startup bundle and keeps ADR-012 isolation enforceable at one import site.
+
+Consequences:
+Every Baileys API correction lives in one adapter file, and a version upgrade requires re-verifying
+the published typings. Packaged builds must ship the dependency as an external runtime module instead
+of bundling it into `out/main/index.js`.
+
+## ADR-015 — Live WhatsApp transport is opt-in
+
+Decision:
+The main process selects the WhatsApp provider only when `process.env.WHATSAPP_PROVIDER === '1'`;
+otherwise the deterministic mock provider is used. No automated test performs network access.
+
+Reason:
+A live WhatsApp session performs real device registration against Meta, cannot be reproduced in CI,
+and must not become the default path while the UI and test suite are still mock-driven.
+
+Consequences:
+Transport selection is process-wide rather than per account, the WhatsApp path is exercised only by
+explicit opt-in runs, and startup account seeding applies to whichever provider is selected.
+
+## ADR-016 — Dependency install scripts stay blocked
+
+Decision:
+The blocked npm install scripts for Baileys `engine-requirements.js` and
+`protobufjs/scripts/postinstall.js` remain blocked.
+
+Reason:
+Both are no-ops on the Node 26 toolchain used for development: the Baileys script only errors below
+Node 20, and the protobufjs script returns early when the package declares no version scheme.
+Allowing them would widen the supply-chain attack surface for no functional gain.
+
+Consequences:
+A future dependency that genuinely needs an install-time build must be reviewed and allowed
+individually rather than by relaxing the global policy.
+
+## ADR-017 — Account provisioning is an application service
+
+Decision:
+`AccountProvisioningService` (`src/application/accounts/account-provisioning.ts`) owns account
+creation, restore, removal, logout, pairing, and connect: validation, ID minting, persistence, and
+session lifecycle. `src/main/ipc.ts` only validates wire input and delegates to it, and
+`AccountManager` remains the session registry.
+
+Reason:
+The lifecycle rules (display-name cap, phone normalization and validation, missing-account errors,
+session disposal ordering) are application behavior. Keeping them out of IPC makes them testable
+without Electron and keeps `ipc.ts` a thin wire adapter.
+
+Consequences:
+IPC handlers stay uniform (`readAccountId` / `readAccountRequest` validation, then one service
+call), provisioning errors surface as `AccountProvisioningError` codes, and any new mutating
+account channel must route through the provisioning service rather than touching repositories or
+sessions directly.
+
+## ADR-018 — Connection state crosses the bridge as a discriminated DTO
+
+Decision:
+`AccountConnectionStateDto` in `src/shared/contracts/desktop-api.ts` mirrors the domain
+`AccountConnectionState` union: a discriminated object carrying `kind` plus the variant detail
+fields (`changedAt`, `attempt`, `connectedAt`, `reason`, `errorCode`, `message`).
+`toAccountSnapshotDto` emits the whole object instead of the bare `kind` string.
+
+Reason:
+The renderer needs the detail fields to explain lifecycle state — retry attempt counts, failure
+codes, disconnect reasons — and a bare string discards them at the boundary. Mirroring the domain
+union keeps one shape on both sides of the bridge without leaking domain or infrastructure types
+(ADR-002, ADR-007).
+
+Consequences:
+Renderer consumers read `connectionState.kind` for status labels and CSS classes, and variant
+fields become available to pairing/retry UI without new IPC channels. Adding a domain state
+variant requires updating the DTO in the same pass.
+
+## ADR-019 — Pairing is an explicit user action
+
+Decision:
+Startup `AccountManager.connectAll()` runs only in mock mode. In `WHATSAPP_PROVIDER=1` mode the app
+never dials stored accounts unattended; connecting or pairing happens only through the
+`accounts:pair` and `accounts:connect` channels invoked by the UI.
+
+Reason:
+An unattended Baileys connect for an unpaired account performs a real device-registration handshake
+against Meta at every boot (the M04 known issue) and re-triggers reconnect timers the user never
+asked for. Pairing is a deliberate, user-initiated flow with a visible QR and pairing code.
+
+Consequences:
+WhatsApp-mode accounts start `idle` or `needsPairing` and stay there until the user acts; the
+pairing panel is driven by `pairing:changed` hints derived from connection-state transitions, and
+mock-mode startup auto-connect behavior is preserved for deterministic tests.

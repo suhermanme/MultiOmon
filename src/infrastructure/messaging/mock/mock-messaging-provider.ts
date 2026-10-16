@@ -33,6 +33,8 @@ export class MockMessagingSession implements MessagingSession {
   #paired: boolean;
   #attempt = 0;
   #messageSequence = 0;
+  #pairingAttempt = 0;
+  #disposed = false;
 
   constructor(accountId: AccountId, options: MockSessionOptions = {}) {
     this.accountId = accountId;
@@ -48,6 +50,7 @@ export class MockMessagingSession implements MessagingSession {
   }
 
   async startPairing(): Promise<void> {
+    this.#assertNotDisposed();
     this.#paired = false;
     if (this.#state.kind === 'connected' || this.#state.kind === 'connecting') {
       await this.disconnect('pairing-restarted');
@@ -55,6 +58,12 @@ export class MockMessagingSession implements MessagingSession {
     if (this.#state.kind !== 'needsPairing') {
       this.#setState({ kind: 'needsPairing', changedAt: this.#now() });
     }
+    this.#pairingAttempt += 1;
+    this.#emit({
+      type: 'pairing.qr',
+      accountId: this.accountId,
+      payload: `mock-qr:${this.accountId}:${this.#pairingAttempt}`,
+    });
     this.#emit({
       type: 'pairing.code',
       accountId: this.accountId,
@@ -65,6 +74,7 @@ export class MockMessagingSession implements MessagingSession {
   }
 
   async connect(): Promise<void> {
+    this.#assertNotDisposed();
     if (this.#state.kind === 'connected') return;
     if (!this.#paired) {
       await this.startPairing();
@@ -94,18 +104,25 @@ export class MockMessagingSession implements MessagingSession {
   }
 
   async disconnect(reason?: string): Promise<void> {
+    if (this.#disposed) return;
     if (this.#state.kind === 'disconnected') return;
     this.#setState({ kind: 'disconnected', changedAt: this.#now(), reason });
     await Promise.resolve();
   }
 
   async logout(): Promise<void> {
+    if (this.#disposed) return;
     this.#paired = false;
     if (this.#state.kind !== 'disconnected') await this.disconnect('logged-out');
     this.#setState({ kind: 'needsPairing', changedAt: this.#now() });
   }
 
   sendText(request: SendTextRequest): Promise<ProviderMessage> {
+    if (this.#disposed) {
+      return Promise.reject(
+        new ProviderError(this.accountId, 'session-disposed', 'Session has been disposed'),
+      );
+    }
     if (this.#state.kind !== 'connected') {
       return Promise.reject(
         new ProviderError(this.accountId, 'not-connected', 'Cannot send while disconnected'),
@@ -136,6 +153,18 @@ export class MockMessagingSession implements MessagingSession {
   subscribe(listener: MessagingEventListener): () => void {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
+  }
+
+  dispose(): void {
+    if (this.#disposed) return;
+    this.#disposed = true;
+    this.#listeners.clear();
+  }
+
+  #assertNotDisposed(): void {
+    if (this.#disposed) {
+      throw new ProviderError(this.accountId, 'session-disposed', 'Session has been disposed');
+    }
   }
 
   async simulatePairingSuccess(): Promise<void> {

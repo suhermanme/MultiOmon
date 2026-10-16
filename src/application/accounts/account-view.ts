@@ -8,7 +8,8 @@ export function toAccountSnapshotDto(snapshot: AccountManagerSnapshot): AccountS
       id: account.id,
       displayName: account.displayName,
       avatarUrl: account.avatarUrl,
-      connectionState: connectionState.kind,
+      phoneNumber: account.phoneNumber,
+      connectionState,
     })),
   };
 }
