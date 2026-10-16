@@ -88,6 +88,15 @@ export const migrations: readonly Migration[] = [
       ALTER TABLE accounts ADD COLUMN phone_number TEXT;
     `,
   },
+  {
+    version: 4,
+    name: 'rebuild_chat_page_index',
+    sql: `
+      DROP INDEX chats_by_account_activity;
+      CREATE INDEX chats_by_account_activity
+        ON chats(account_id, COALESCE(last_activity_at, 0) DESC, id DESC);
+    `,
+  },
 ];
 
 interface MigrationRow {

@@ -84,6 +84,36 @@ export interface MessagingChangeDto {
   readonly chatId: string;
 }
 
+export interface ChatPageCursorDto {
+  readonly lastActivityAt: number;
+  readonly chatId: string;
+}
+
+export interface ChatPageOptionsDto {
+  readonly limit?: number;
+  readonly cursor?: ChatPageCursorDto | null;
+}
+
+export interface ChatPageDto {
+  readonly items: readonly ChatSummaryDto[];
+  readonly nextCursor: ChatPageCursorDto | null;
+}
+
+export interface MessagePageCursorDto {
+  readonly sentAt: number;
+  readonly messageId: string;
+}
+
+export interface MessagePageOptionsDto {
+  readonly limit?: number;
+  readonly cursor?: MessagePageCursorDto | null;
+}
+
+export interface MessagePageDto {
+  readonly items: readonly MessageDto[];
+  readonly nextCursor: MessagePageCursorDto | null;
+}
+
 export interface RuntimeInfo {
   readonly platform: string;
   readonly versions: {
@@ -110,12 +140,12 @@ export interface DesktopApi {
     readonly subscribe: (listener: (update: PairingUpdateDto) => void) => () => void;
   };
   readonly messaging: {
-    readonly listChats: (accountId: string) => Promise<readonly ChatSummaryDto[]>;
+    readonly listChats: (accountId: string, options?: ChatPageOptionsDto) => Promise<ChatPageDto>;
     readonly listMessages: (
       accountId: string,
       chatId: string,
-      limit?: number,
-    ) => Promise<readonly MessageDto[]>;
-    readonly subscribe: (listener: (change: MessagingChangeDto) => void) => () => void;
+      options?: MessagePageOptionsDto,
+    ) => Promise<MessagePageDto>;
+    readonly subscribe: (listener: (changes: readonly MessagingChangeDto[]) => void) => () => void;
   };
 }

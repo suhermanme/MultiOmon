@@ -2,10 +2,12 @@ import { contextBridge, ipcRenderer } from 'electron';
 import {
   IPC_CHANNELS,
   type AccountSnapshotDto,
-  type ChatSummaryDto,
+  type ChatPageDto,
+  type ChatPageOptionsDto,
   type CreateAccountRequestDto,
   type DesktopApi,
-  type MessageDto,
+  type MessagePageDto,
+  type MessagePageOptionsDto,
   type MessagingChangeDto,
   type PairingUpdateDto,
   type RuntimeInfo,
@@ -47,15 +49,21 @@ const desktopApi: DesktopApi = Object.freeze({
     },
   }),
   messaging: Object.freeze({
-    listChats: (accountId: string) =>
-      ipcRenderer.invoke(IPC_CHANNELS.chatList, accountId) as Promise<readonly ChatSummaryDto[]>,
-    listMessages: (accountId: string, chatId: string, limit?: number) =>
-      ipcRenderer.invoke(IPC_CHANNELS.messageList, accountId, chatId, limit) as Promise<
-        readonly MessageDto[]
-      >,
-    subscribe: (listener: (change: MessagingChangeDto) => void) => {
-      const handler = (_event: Electron.IpcRendererEvent, change: MessagingChangeDto): void => {
-        listener(change);
+    listChats: (accountId: string, options?: ChatPageOptionsDto) =>
+      ipcRenderer.invoke(IPC_CHANNELS.chatList, accountId, options) as Promise<ChatPageDto>,
+    listMessages: (accountId: string, chatId: string, options?: MessagePageOptionsDto) =>
+      ipcRenderer.invoke(
+        IPC_CHANNELS.messageList,
+        accountId,
+        chatId,
+        options,
+      ) as Promise<MessagePageDto>,
+    subscribe: (listener: (changes: readonly MessagingChangeDto[]) => void) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        changes: readonly MessagingChangeDto[],
+      ): void => {
+        listener(changes);
       };
       ipcRenderer.on(IPC_CHANNELS.messagingChanged, handler);
       return () => ipcRenderer.removeListener(IPC_CHANNELS.messagingChanged, handler);

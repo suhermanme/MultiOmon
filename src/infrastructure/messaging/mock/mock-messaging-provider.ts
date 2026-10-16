@@ -27,6 +27,7 @@ export class MockMessagingSession implements MessagingSession {
   readonly accountId: AccountId;
   readonly #listeners = new Set<MessagingEventListener>();
   readonly #history: MockAccountHistory;
+  readonly #chats = new Map<string, ProviderChat>();
   readonly #failConnectionWith: MockSessionOptions['failConnectionWith'];
   readonly #now: () => number;
   #state: ProviderConnectionState;
@@ -97,7 +98,7 @@ export class MockMessagingSession implements MessagingSession {
 
     const connectedAt = this.#now();
     this.#setState({ kind: 'connected', changedAt: connectedAt, connectedAt });
-    for (const chat of this.#history.chats ?? []) this.#emit({ type: 'chat.upserted', chat });
+    for (const chat of this.#history.chats ?? []) this.#recordChat(chat);
     for (const message of this.#history.messages ?? []) {
       this.#emit({ type: 'message.upserted', message });
     }
@@ -147,6 +148,17 @@ export class MockMessagingSession implements MessagingSession {
         : { replyToRemoteMessageId: request.replyToRemoteMessageId }),
     };
     this.#emit({ type: 'message.upserted', message });
+    const base = this.#chats.get(request.chatRemoteId);
+    this.#recordChat({
+      ...(base ?? {
+        accountId: this.accountId,
+        remoteId: request.chatRemoteId,
+        kind: request.chatRemoteId.endsWith('@g.us') ? 'group' : 'direct',
+        title: request.chatRemoteId,
+        unreadCount: 0,
+      }),
+      lastActivityAt: message.sentAt,
+    });
     return Promise.resolve(message);
   }
 
@@ -181,14 +193,34 @@ export class MockMessagingSession implements MessagingSession {
     if (this.#state.kind !== 'connected') {
       throw new ProviderError(this.accountId, 'not-connected', 'Cannot receive while disconnected');
     }
-    this.#emit({
-      type: 'message.upserted',
-      message: { ...message, accountId: this.accountId, direction: 'incoming' },
+    const incoming: ProviderMessage = {
+      ...message,
+      accountId: this.accountId,
+      direction: 'incoming',
+    };
+    // Mirror Baileys' flush order: chat delta first, then the message.
+    const base = this.#chats.get(incoming.chatRemoteId);
+    this.#recordChat({
+      ...(base ?? {
+        accountId: this.accountId,
+        remoteId: incoming.chatRemoteId,
+        kind: incoming.chatRemoteId.endsWith('@g.us') ? 'group' : 'direct',
+        title: incoming.senderRemoteId ?? incoming.chatRemoteId,
+        unreadCount: 0,
+      }),
+      unreadCount: (base?.unreadCount ?? 0) + 1,
+      lastActivityAt: incoming.sentAt,
     });
+    this.#emit({ type: 'message.upserted', message: incoming });
   }
 
   simulateChat(chat: Omit<ProviderChat, 'accountId'>): void {
-    this.#emit({ type: 'chat.upserted', chat: { ...chat, accountId: this.accountId } });
+    this.#recordChat({ ...chat, accountId: this.accountId });
+  }
+
+  #recordChat(chat: ProviderChat): void {
+    this.#chats.set(chat.remoteId, chat);
+    this.#emit({ type: 'chat.upserted', chat });
   }
 
   #setState(state: ProviderConnectionState): void {

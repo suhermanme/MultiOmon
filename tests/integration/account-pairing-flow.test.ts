@@ -127,7 +127,7 @@ function createHarness() {
       save: () => undefined,
       getById: () => null,
       getByRemoteId: () => null,
-      listByAccount: () => [],
+      listPage: () => ({ items: [], nextCursor: null }),
     },
     contacts: {
       save: () => undefined,

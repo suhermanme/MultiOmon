@@ -281,3 +281,71 @@ Consequences:
 WhatsApp-mode accounts start `idle` or `needsPairing` and stay there until the user acts; the
 pairing panel is driven by `pairing:changed` hints derived from connection-state transitions, and
 mock-mode startup auto-connect behavior is preserved for deterministic tests.
+
+## ADR-020 — Baileys history sync maps onto the existing MessagingEvent vocabulary
+
+Decision:
+`messaging-history.set` and `chats.upsert` are translated into the existing `chat.upserted` and
+`message.upserted` events inside `WhatsappMessagingSession`; no hydration-specific event variant is
+added to the provider contract.
+
+Reason:
+Hydration is just an earlier source of the same facts the projection already consumes. Mapping onto
+existing events routes history through the identical transactional commit path (ADR-013), keeps the
+mock provider behaviorally equivalent to WhatsApp, and avoids a second persistence path for synced
+chats.
+
+Consequences:
+A connect can emit hundreds of events in one burst; the session keeps a `#knownChats` cache of
+normalized provider chats so deltas after hydration merge against a correct base across reconnects.
+
+## ADR-021 — Unread counts are provider-authoritative deltas
+
+Decision:
+`MessagingService.#projectMessage` never increments `unreadCount` on an existing chat. In the
+WhatsApp session, `chats.update.unreadCount` is added to the cached base as a delta, `null`/`0` are
+absolute marks-read, and protobuf Long values (absolute server payloads) replace it. A chat created
+from a projected message gets `1` for incoming and `0` for outgoing.
+
+Reason:
+Baileys computes unread itself: `process-message.js` builds `unreadCount: (chat.unreadCount || 0) + 1`
+per incoming message and `event-buffer.js` merges those patches additively, while
+`chat-utils.js` resets to 0 on mark-read. Incrementing again in the projection double-counts.
+
+Consequences:
+Unread accuracy depends on the session's `#knownChats` base being current; a session restart before
+the next `chats.upsert`/history sync can undercount until the provider re-asserts the absolute value.
+
+## ADR-022 — Chat pagination is keyset on COALESCE(last_activity_at, 0) DESC with id tiebreak
+
+Decision:
+`ChatRepository.listByAccount` is replaced by `listPage(accountId, limit?, cursor?)` with cursor
+`{ lastActivityAt, chatId }`, limit clamped to 1..200, ordering
+`COALESCE(last_activity_at, 0) DESC, id DESC`, and migration v4 rebuilding
+`chats_by_account_activity` to match.
+
+Reason:
+OFFSET pagination shifts rows under concurrent upserts and forces re-scans on long histories; keyset
+predicates (`activity < cursor OR (activity = cursor AND id < cursorChat)`) are stable and index
+backed. `COALESCE` puts chats with no recorded activity last deterministically, and the `id`
+tiebreak makes the order total for equal timestamps.
+
+Consequences:
+The renderer loads conversations page-by-page via `nextCursor`; IPC validates page options before
+they reach the view, and any new ordering requirement needs a matching index migration.
+
+## ADR-023 — Messaging change notifications are coalesced per account and chat
+
+Decision:
+`src/main/ipc.ts` buffers `MessagingService` projection changes in a microtask-coalesced map keyed
+by `accountId` + `chatId` and sends one `messaging:changed` batch (an array of `MessagingChangeDto`)
+per burst instead of one IPC event per change.
+
+Reason:
+History hydration and bulk incoming messages commit dozens to hundreds of events in one tick;
+per-event IPC would make every renderer reload race a per-event store refresh. Coalescing preserves
+ADR-013 ordering (events fire only after commit) while bounding bridge traffic.
+
+Consequences:
+The preload `messaging.subscribe` listener receives arrays, and the store reloads once per batch;
+per-chat keys mean a burst touching several chats yields one entry per chat, not a global reload.

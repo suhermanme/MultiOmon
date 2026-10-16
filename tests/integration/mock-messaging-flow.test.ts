@@ -62,6 +62,11 @@ describe('mock provider to renderer projection flow', () => {
     const managedSession = service.createAccountSession(account.id);
 
     await managedSession.connect();
+    expect(view.listChats(account.id).items[0]).toMatchObject({
+      title: 'Friend',
+      unreadCount: 1,
+      lastActivityAt: 100,
+    });
     await provider.getSession(account.id).sendText({
       chatRemoteId: 'friend@remote',
       text: 'Hello back',
@@ -74,14 +79,17 @@ describe('mock provider to renderer projection flow', () => {
     });
 
     const chats = view.listChats(account.id);
-    expect(chats).toHaveLength(1);
-    expect(chats[0]).toMatchObject({ title: 'Friend', accountId: account.id });
-    const messages = view.listMessages(account.id, createChatId(chats[0]!.id));
-    expect(messages.map(({ content }) => content)).toEqual([
+    expect(chats.items).toHaveLength(1);
+    expect(chats.items[0]).toMatchObject({ title: 'Friend', accountId: account.id });
+    const messages = view.listMessages(account.id, createChatId(chats.items[0]!.id));
+    expect(messages.items.map(({ content }) => content)).toEqual([
       { kind: 'text', text: 'Hello from the provider' },
       { kind: 'text', text: 'Hello back' },
     ]);
-    expect(changes).toHaveBeenCalledTimes(3);
+    // chat.upserted (seed) + message.upserted (seed) + message.upserted (send) +
+    // chat.upserted (send) + chat.upserted (incoming delta); the duplicate
+    // incoming message is idempotent and yields no change.
+    expect(changes).toHaveBeenCalledTimes(5);
     expect(managedSession.getState().kind).toBe('connected');
     service.dispose();
   });
@@ -111,8 +119,8 @@ describe('mock provider to renderer projection flow', () => {
       unreadCount: 0,
     });
 
-    expect(repositories.chats.listByAccount(firstAccountId)[0]?.title).toBe('First chat');
-    expect(repositories.chats.listByAccount(secondAccountId)[0]?.title).toBe('Second chat');
+    expect(repositories.chats.listPage(firstAccountId, 1).items[0]?.title).toBe('First chat');
+    expect(repositories.chats.listPage(secondAccountId, 1).items[0]?.title).toBe('Second chat');
     await first.disconnect('first-only');
     expect(first.getState().kind).toBe('disconnected');
     expect(second.getState().kind).toBe('connected');

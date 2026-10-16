@@ -9,6 +9,9 @@ import {
   IPC_CHANNELS,
   type AccountConnectionStateDto,
   type AccountSnapshotDto,
+  type ChatPageOptionsDto,
+  type MessagePageOptionsDto,
+  type MessagingChangeDto,
   type RuntimeInfo,
 } from '../shared/contracts/desktop-api';
 
@@ -37,6 +40,48 @@ function readAccountRequest(request: unknown): { displayName: string; phoneNumbe
     throw new TypeError('Phone number must be a string');
   }
   return { displayName, ...(typeof phoneNumber === 'string' ? { phoneNumber } : {}) };
+}
+
+function readChatPageOptions(options: unknown): ChatPageOptionsDto {
+  if (options === undefined || options === null) return {};
+  if (typeof options !== 'object') throw new TypeError('Chat page options must be an object');
+  const { limit, cursor } = options as { limit?: unknown; cursor?: unknown };
+  if (limit !== undefined && (typeof limit !== 'number' || !Number.isInteger(limit))) {
+    throw new TypeError('Chat page limit must be an integer');
+  }
+  if (cursor === undefined || cursor === null) {
+    return limit === undefined ? {} : { limit };
+  }
+  if (typeof cursor !== 'object') throw new TypeError('Chat page cursor must be an object');
+  const { lastActivityAt, chatId } = cursor as { lastActivityAt?: unknown; chatId?: unknown };
+  if (typeof lastActivityAt !== 'number' || typeof chatId !== 'string') {
+    throw new TypeError('Chat page cursor must carry a numeric lastActivityAt and string chatId');
+  }
+  return {
+    ...(limit === undefined ? {} : { limit }),
+    cursor: { lastActivityAt, chatId },
+  };
+}
+
+function readMessagePageOptions(options: unknown): MessagePageOptionsDto {
+  if (options === undefined || options === null) return {};
+  if (typeof options !== 'object') throw new TypeError('Message page options must be an object');
+  const { limit, cursor } = options as { limit?: unknown; cursor?: unknown };
+  if (limit !== undefined && (typeof limit !== 'number' || !Number.isInteger(limit))) {
+    throw new TypeError('Message page limit must be an integer');
+  }
+  if (cursor === undefined || cursor === null) {
+    return limit === undefined ? {} : { limit };
+  }
+  if (typeof cursor !== 'object') throw new TypeError('Message page cursor must be an object');
+  const { sentAt, messageId } = cursor as { sentAt?: unknown; messageId?: unknown };
+  if (typeof sentAt !== 'number' || typeof messageId !== 'string') {
+    throw new TypeError('Message page cursor must carry a numeric sentAt and string messageId');
+  }
+  return {
+    ...(limit === undefined ? {} : { limit }),
+    cursor: { sentAt, messageId },
+  };
 }
 
 function sendToWindows(channel: string, payload: unknown): void {
@@ -122,21 +167,18 @@ export function registerIpcHandlers(services: IpcServices): () => void {
     await provisioning.connectAccount(readAccountId(accountId));
   });
 
-  ipcMain.handle(IPC_CHANNELS.chatList, (_event, accountId: unknown) => {
-    return messagingView.listChats(readAccountId(accountId));
+  ipcMain.handle(IPC_CHANNELS.chatList, (_event, accountId: unknown, options: unknown) => {
+    return messagingView.listChats(readAccountId(accountId), readChatPageOptions(options));
   });
 
   ipcMain.handle(
     IPC_CHANNELS.messageList,
-    (_event, accountId: unknown, chatId: unknown, limit: unknown) => {
+    (_event, accountId: unknown, chatId: unknown, options: unknown) => {
       if (typeof chatId !== 'string') throw new TypeError('Chat ID must be a string');
-      if (limit !== undefined && typeof limit !== 'number') {
-        throw new TypeError('Message limit must be a number');
-      }
       return messagingView.listMessages(
         readAccountId(accountId),
         createChatId(chatId),
-        limit ?? 50,
+        readMessagePageOptions(options),
       );
     },
   );
@@ -144,14 +186,28 @@ export function registerIpcHandlers(services: IpcServices): () => void {
   const unsubscribe = accountManager.subscribe((snapshot) => {
     publishAccounts(toAccountSnapshotDto(snapshot));
   });
+  // History hydration projects thousands of events in one synchronous burst;
+  // coalescing per chat keeps one IPC batch (and one renderer reload) per burst.
+  let pendingChanges: Map<string, MessagingChangeDto> | undefined;
+  const flushMessagingChanges = (): void => {
+    const batch = pendingChanges;
+    pendingChanges = undefined;
+    if (!batch || batch.size === 0) return;
+    sendToWindows(IPC_CHANNELS.messagingChanged, [...batch.values()]);
+  };
   const unsubscribeMessaging = messagingService.subscribe((change) => {
-    sendToWindows(IPC_CHANNELS.messagingChanged, change);
+    if (!pendingChanges) {
+      pendingChanges = new Map();
+      queueMicrotask(flushMessagingChanges);
+    }
+    pendingChanges.set(`${change.accountId}\u0000${change.chatId}`, change);
   });
   const unsubscribePairing = messagingService.subscribePairing((event) => {
     sendToWindows(IPC_CHANNELS.pairingChanged, toPairingUpdateDto(event));
   });
 
   return () => {
+    pendingChanges = undefined;
     unsubscribe();
     unsubscribeMessaging();
     unsubscribePairing();

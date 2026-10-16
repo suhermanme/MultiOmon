@@ -188,7 +188,15 @@ export class MessagingService {
     const chatId =
       existingChat?.id ??
       createChatId(createScopedRemoteKey(message.accountId, message.chatRemoteId));
-    if (!existingChat) {
+    if (existingChat) {
+      const currentActivity = existingChat.lastActivityAt ?? 0;
+      if (message.sentAt > currentActivity) {
+        this.#repositories.chats.save({
+          ...existingChat,
+          lastActivityAt: message.sentAt,
+        });
+      }
+    } else {
       this.#repositories.chats.save({
         id: chatId,
         accountId: message.accountId,

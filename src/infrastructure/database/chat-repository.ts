@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import type { ChatRepository } from '../../application/ports/repositories';
+import type { ChatPageCursor, ChatRepository, Page } from '../../application/ports/repositories';
 import {
   createAccountId,
   createChatId,
@@ -83,18 +83,55 @@ export class SqliteChatRepository implements ChatRepository {
     );
   }
 
-  listByAccount(accountId: AccountId): readonly Chat[] {
-    return withDatabaseError('list chats', () =>
-      (
-        this.#database
-          .prepare(
-            `${selectChat}
-             WHERE account_id = ?
-             ORDER BY last_activity_at DESC, id DESC`,
-          )
-          .all(accountId) as ChatRow[]
-      ).map(toChat),
-    );
+  listPage(
+    accountId: AccountId,
+    limit: number,
+    cursor?: ChatPageCursor,
+  ): Page<Chat, ChatPageCursor> {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
+      throw new RangeError('Chat page limit must be an integer between 1 and 200');
+    }
+
+    return withDatabaseError('list chat page', () => {
+      const rows = cursor
+        ? (this.#database
+            .prepare(
+              `${selectChat}
+               WHERE account_id = ?
+                 AND (
+                   COALESCE(last_activity_at, 0) < ?
+                   OR (COALESCE(last_activity_at, 0) = ? AND id < ?)
+                 )
+               ORDER BY COALESCE(last_activity_at, 0) DESC, id DESC
+               LIMIT ?`,
+            )
+            .all(
+              accountId,
+              cursor.lastActivityAt,
+              cursor.lastActivityAt,
+              cursor.chatId,
+              limit + 1,
+            ) as ChatRow[])
+        : (this.#database
+            .prepare(
+              `${selectChat}
+               WHERE account_id = ?
+               ORDER BY COALESCE(last_activity_at, 0) DESC, id DESC
+               LIMIT ?`,
+            )
+            .all(accountId, limit + 1) as ChatRow[]);
+
+      const hasNextPage = rows.length > limit;
+      const items = rows.slice(0, limit).map(toChat);
+      const last = items.at(-1);
+      return {
+        items,
+        nextCursor:
+          hasNextPage && last
+            ? { lastActivityAt: last.lastActivityAt ?? 0, chatId: last.id }
+            : null,
+      };
+    });
   }
 
   #getOne(sql: string, ...parameters: readonly string[]): Chat | null {

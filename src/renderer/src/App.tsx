@@ -25,6 +25,35 @@ const statusLabels: Readonly<Record<AccountConnectionStateDto['kind'], string>> 
   failed: 'Error',
 };
 
+const emptyChatStates: Readonly<
+  Record<AccountConnectionStateDto['kind'], { readonly title: string; readonly body: string }>
+> = {
+  idle: {
+    title: 'Not connected yet',
+    body: 'Pair this account or press Connect to sync its conversations.',
+  },
+  needsPairing: {
+    title: 'Pairing required',
+    body: 'Scan the pairing code with WhatsApp to sync this account.',
+  },
+  connecting: {
+    title: 'Syncing conversations…',
+    body: 'Message history is being downloaded and stored locally.',
+  },
+  connected: {
+    title: 'No conversations yet',
+    body: 'New conversations will appear here after they are stored locally.',
+  },
+  disconnected: {
+    title: 'Connection lost',
+    body: 'Press Connect to resume syncing this account.',
+  },
+  failed: {
+    title: 'Sync failed',
+    body: 'Review the account error, then pair or connect again.',
+  },
+};
+
 function initials(name: string): string {
   return name
     .split(/\s+/)
@@ -40,7 +69,10 @@ interface AccountButtonProps {
 }
 
 function AccountButton({ account, active, onSelect }: AccountButtonProps): React.JSX.Element {
-  const status = statusLabels[account.connectionState.kind];
+  const status =
+    account.connectionState.kind === 'connecting'
+      ? `Connecting · attempt ${account.connectionState.attempt}`
+      : statusLabels[account.connectionState.kind];
 
   return (
     <button
@@ -283,12 +315,16 @@ export function App(): React.JSX.Element {
   } = useAccountStore();
   const {
     chats,
+    chatsNextCursor,
     selectedChatId,
     messages,
+    messagesNextCursor,
     loading: messagingLoading,
     error: messagingError,
     loadAccount,
     selectChat,
+    loadMoreChats,
+    loadOlderMessages,
   } = useMessagingStore();
   const activeAccount =
     snapshot.accounts.find((account) => account.id === snapshot.activeAccountId) ?? null;
@@ -301,8 +337,8 @@ export function App(): React.JSX.Element {
     const unsubscribe = window.multiomon.accounts.subscribe((nextSnapshot) => {
       if (active) applySnapshot(nextSnapshot);
     });
-    const unsubscribeMessaging = window.multiomon.messaging.subscribe((change) => {
-      if (active) void useMessagingStore.getState().refresh(change);
+    const unsubscribeMessaging = window.multiomon.messaging.subscribe((changes) => {
+      if (active) void useMessagingStore.getState().refresh(changes);
     });
     const unsubscribePairing = subscribePairing();
 
@@ -337,6 +373,13 @@ export function App(): React.JSX.Element {
   const handleSelect = (accountId: string): void => {
     void selectAccount(accountId);
   };
+
+  const [chatSearch, setChatSearch] = useState('');
+  const chatQuery = chatSearch.trim().toLowerCase();
+  const visibleChats =
+    chatQuery.length === 0
+      ? chats
+      : chats.filter((chat) => chat.title.toLowerCase().includes(chatQuery));
 
   const selectedChat = chats.find((chat) => chat.id === selectedChatId) ?? null;
 
@@ -392,7 +435,9 @@ export function App(): React.JSX.Element {
             </div>
             {activeAccount && (
               <span className={`connection-badge badge-${activeAccount.connectionState.kind}`}>
-                {statusLabels[activeAccount.connectionState.kind]}
+                {activeAccount.connectionState.kind === 'connecting'
+                  ? `Connecting · attempt ${activeAccount.connectionState.attempt}`
+                  : statusLabels[activeAccount.connectionState.kind]}
               </span>
             )}
           </div>
@@ -416,37 +461,75 @@ export function App(): React.JSX.Element {
             <div className="account-error" role="alert">
               {error ?? messagingError}
             </div>
-          ) : chats.length > 0 ? (
-            <div className="chat-list" aria-label="Local conversations">
-              {chats.map((chat) => (
-                <button
-                  key={chat.id}
-                  className={`chat-row${chat.id === selectedChatId ? ' chat-row-active' : ''}`}
-                  type="button"
-                  aria-pressed={chat.id === selectedChatId}
-                  onClick={() => void selectChat(chat.id)}
-                >
-                  <span className="chat-avatar" aria-hidden="true">
-                    {initials(chat.title)}
-                  </span>
-                  <span className="chat-copy">
-                    <strong>{chat.title}</strong>
-                    <span>{chat.kind === 'group' ? 'Group' : 'Direct conversation'}</span>
-                  </span>
-                  {chat.unreadCount > 0 && <span className="unread-count">{chat.unreadCount}</span>}
-                </button>
-              ))}
-            </div>
           ) : (
-            <div className="empty-list">
-              <div className="empty-list-icon" aria-hidden="true">
-                ≡
-              </div>
-              <strong>
-                {messagingLoading ? 'Loading conversations…' : 'No conversations yet'}
-              </strong>
-              <p>New conversations will appear here after they are stored locally.</p>
-            </div>
+            <>
+              {chats.length > 0 && (
+                <input
+                  className="chat-search"
+                  type="search"
+                  placeholder="Search conversations"
+                  aria-label="Search conversations"
+                  value={chatSearch}
+                  onChange={(event) => setChatSearch(event.target.value)}
+                />
+              )}
+              {visibleChats.length > 0 ? (
+                <div className="chat-list" aria-label="Local conversations">
+                  {visibleChats.map((chat) => (
+                    <button
+                      key={chat.id}
+                      className={`chat-row${chat.id === selectedChatId ? ' chat-row-active' : ''}`}
+                      type="button"
+                      aria-pressed={chat.id === selectedChatId}
+                      onClick={() => void selectChat(chat.id)}
+                    >
+                      <span className="chat-avatar" aria-hidden="true">
+                        {initials(chat.title)}
+                      </span>
+                      <span className="chat-copy">
+                        <strong>{chat.title}</strong>
+                        <span>{chat.kind === 'group' ? 'Group' : 'Direct conversation'}</span>
+                      </span>
+                      {chat.unreadCount > 0 && (
+                        <span className="unread-count">{chat.unreadCount}</span>
+                      )}
+                    </button>
+                  ))}
+                  {chatsNextCursor !== null && (
+                    <button
+                      className="load-more"
+                      type="button"
+                      disabled={messagingLoading}
+                      onClick={() => void loadMoreChats()}
+                    >
+                      Load more conversations
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <div className="empty-list">
+                  <div className="empty-list-icon" aria-hidden="true">
+                    ≡
+                  </div>
+                  <strong>
+                    {messagingLoading
+                      ? 'Loading conversations…'
+                      : chatQuery.length > 0
+                        ? 'No matching conversations'
+                        : activeAccount
+                          ? emptyChatStates[activeAccount.connectionState.kind].title
+                          : 'No conversations yet'}
+                  </strong>
+                  <p>
+                    {chatQuery.length > 0
+                      ? 'Search filters the conversations already loaded locally.'
+                      : activeAccount
+                        ? emptyChatStates[activeAccount.connectionState.kind].body
+                        : 'Add an account to start syncing conversations.'}
+                  </p>
+                </div>
+              )}
+            </>
           )}
         </section>
 
@@ -458,6 +541,16 @@ export function App(): React.JSX.Element {
                 <h2>{selectedChat.title}</h2>
               </header>
               <div className="message-list" aria-label={`Messages in ${selectedChat.title}`}>
+                {messagesNextCursor !== null && (
+                  <button
+                    className="load-older"
+                    type="button"
+                    disabled={messagingLoading}
+                    onClick={() => void loadOlderMessages()}
+                  >
+                    Load older messages
+                  </button>
+                )}
                 {messages.map((message) => (
                   <article
                     key={message.id}

@@ -76,12 +76,12 @@ describe('SQLite persistence', () => {
   });
 
   it('creates and reapplies versioned migrations safely', () => {
-    expect(getAppliedMigrationVersions(database.connection)).toEqual([1, 2, 3]);
+    expect(getAppliedMigrationVersions(database.connection)).toEqual([1, 2, 3, 4]);
 
     database.close();
     database = SqliteDatabase.open(filePath);
 
-    expect(getAppliedMigrationVersions(database.connection)).toEqual([1, 2, 3]);
+    expect(getAppliedMigrationVersions(database.connection)).toEqual([1, 2, 3, 4]);
   });
 
   it('upgrades an existing version-one database without destroying its data', () => {
@@ -108,7 +108,7 @@ describe('SQLite persistence', () => {
     const upgraded = SqliteDatabase.open(legacyPath);
     const upgradedRepositories = createRepositories(upgraded);
 
-    expect(getAppliedMigrationVersions(upgraded.connection)).toEqual([1, 2, 3]);
+    expect(getAppliedMigrationVersions(upgraded.connection)).toEqual([1, 2, 3, 4]);
     const legacyAccount = upgradedRepositories.accounts.list()[0];
     expect(legacyAccount?.displayName).toBe('Legacy account');
     expect(legacyAccount?.phoneNumber).toBeUndefined();
@@ -163,7 +163,7 @@ describe('SQLite persistence', () => {
     expect(repositories.accounts.list()).toHaveLength(3);
     for (const restoredAccount of repositories.accounts.list()) {
       expect(repositories.contacts.listByAccount(restoredAccount.id)).toHaveLength(0);
-      expect(repositories.chats.listByAccount(restoredAccount.id)).toHaveLength(0);
+      expect(repositories.chats.listPage(restoredAccount.id, 1).items).toHaveLength(0);
     }
   });
 
@@ -236,6 +236,64 @@ describe('SQLite persistence', () => {
     );
     expect(third.items.map(({ id }) => id)).toEqual(['message-1']);
     expect(third.nextCursor).toBeNull();
+  });
+
+  it('pages chats newest-first with a keyset cursor and id tiebreak', () => {
+    const savedAccount = account('chat-pages');
+    repositories.accounts.save(savedAccount);
+    const otherAccount = account('chat-pages-other');
+    repositories.accounts.save(otherAccount);
+    repositories.chats.save({ ...chat(savedAccount, 'old', 'old@remote'), lastActivityAt: 300 });
+    repositories.chats.save({
+      ...chat(savedAccount, 'tie-b', 'tie-b@remote'),
+      lastActivityAt: 700,
+    });
+    repositories.chats.save({
+      ...chat(savedAccount, 'tie-a', 'tie-a@remote'),
+      lastActivityAt: 700,
+    });
+    repositories.chats.save({ ...chat(savedAccount, 'mid', 'mid@remote'), lastActivityAt: 500 });
+    repositories.chats.save({
+      id: createChatId('null-activity'),
+      accountId: savedAccount.id,
+      remoteId: 'null@remote',
+      kind: 'direct',
+      title: 'Chat null-activity',
+      unreadCount: 0,
+    });
+    repositories.chats.save({
+      ...chat(otherAccount, 'other', 'other@remote'),
+      lastActivityAt: 900,
+    });
+
+    const firstPage = repositories.chats.listPage(savedAccount.id, 2);
+    expect(firstPage.items.map(({ id }) => id)).toEqual(['tie-b', 'tie-a']);
+    expect(firstPage.nextCursor).toEqual({ lastActivityAt: 700, chatId: 'tie-a' });
+
+    const secondPage = repositories.chats.listPage(
+      savedAccount.id,
+      2,
+      firstPage.nextCursor ?? undefined,
+    );
+    expect(secondPage.items.map(({ id }) => id)).toEqual(['mid', 'old']);
+    expect(secondPage.nextCursor).toEqual({ lastActivityAt: 300, chatId: 'old' });
+
+    const thirdPage = repositories.chats.listPage(
+      savedAccount.id,
+      2,
+      secondPage.nextCursor ?? undefined,
+    );
+    expect(thirdPage.items.map(({ id }) => id)).toEqual(['null-activity']);
+    expect(thirdPage.nextCursor).toBeNull();
+  });
+
+  it('rejects chat page limits outside the supported range', () => {
+    const savedAccount = account('chat-page-limits');
+    repositories.accounts.save(savedAccount);
+
+    expect(() => repositories.chats.listPage(savedAccount.id, 0)).toThrow(RangeError);
+    expect(() => repositories.chats.listPage(savedAccount.id, 201)).toThrow(RangeError);
+    expect(() => repositories.chats.listPage(savedAccount.id, 1.5)).toThrow(RangeError);
   });
 
   it('rolls back all writes when a transaction fails', () => {

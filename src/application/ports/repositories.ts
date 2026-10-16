@@ -26,11 +26,20 @@ export interface AccountRepository {
   delete(accountId: AccountId): void;
 }
 
+export interface ChatPageCursor {
+  readonly lastActivityAt: number;
+  readonly chatId: ChatId;
+}
+
 export interface ChatRepository {
   save(chat: Chat): void;
   getById(accountId: AccountId, chatId: ChatId): Chat | null;
   getByRemoteId(accountId: AccountId, remoteId: string): Chat | null;
-  listByAccount(accountId: AccountId): readonly Chat[];
+  listPage(
+    accountId: AccountId,
+    limit: number,
+    cursor?: ChatPageCursor,
+  ): Page<Chat, ChatPageCursor>;
 }
 
 export interface ContactRepository {

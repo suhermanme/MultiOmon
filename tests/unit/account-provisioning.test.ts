@@ -138,7 +138,7 @@ function createHarness(options: { mintAccountId?: () => AccountId } = {}) {
       save: () => undefined,
       getById: () => null,
       getByRemoteId: () => null,
-      listByAccount: () => [],
+      listPage: () => ({ items: [], nextCursor: null }),
     },
     contacts: {
       save: () => undefined,

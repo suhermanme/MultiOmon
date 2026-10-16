@@ -48,7 +48,7 @@ describe('whatsapp provider to messaging service integration', { timeout: 10000 
     expect(managedSession.getState().kind).toBe('idle');
 
     // Without a socket the provider must not project anything
-    expect(view.listChats(account.id)).toEqual([]);
+    expect(view.listChats(account.id).items).toEqual([]);
     expect(changes).toEqual([]);
 
     // connection.changed must never surface as a projection change

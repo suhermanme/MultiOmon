@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
   MessagingEvent,
+  ProviderChat,
   ProviderConnectionState,
 } from '../../src/application/ports/messaging-provider';
 import { createAccountId } from '../../src/domain';
@@ -141,6 +142,21 @@ function closeSocket(socket: FakeSocket, error?: Record<string, unknown>): void 
     connection: 'close',
     ...(error === undefined ? {} : { lastDisconnect: { error } }),
   });
+}
+
+function chatUpserts(events: readonly MessagingEvent[]): ProviderChat[] {
+  return events.flatMap((event) => (event.type === 'chat.upserted' ? [event.chat] : []));
+}
+
+async function openConnectedSession(authDir: string): Promise<{
+  session: WhatsappMessagingSession;
+  events: MessagingEvent[];
+}> {
+  const session = new WhatsappMessagingSession(accountId, authDir);
+  await session.connect();
+  requireSocket(0).emit('connection.update', { connection: 'open' });
+  const events = collectEvents(session);
+  return { session, events };
 }
 
 describe('WhatsappMessagingSession', () => {
@@ -545,6 +561,207 @@ describe('WhatsappMessagingSession', () => {
 
       expect(harness.sockets).toHaveLength(1);
       expect(events).toHaveLength(0);
+    });
+  });
+
+  describe('history hydration', () => {
+    it('maps messaging-history.set chats and messages onto normalized events', async () => {
+      const { events } = await openConnectedSession(authDir);
+
+      requireSocket(0).emit('messaging-history.set', {
+        chats: [
+          {
+            id: '33612345678@s.whatsapp.net',
+            name: 'Alice',
+            unreadCount: 2,
+            conversationTimestamp: 1_700_000_000,
+          },
+          { id: 'group-1@g.us', lastMessageRecvTimestamp: 1_700_000_500 },
+        ],
+        messages: [
+          {
+            key: { id: 'hist-1', remoteJid: '33612345678@s.whatsapp.net', fromMe: false },
+            message: { conversation: 'History message' },
+            messageTimestamp: 1_700_000_000,
+          },
+        ],
+        isLatest: true,
+      });
+
+      expect(chatUpserts(events)).toEqual([
+        {
+          accountId,
+          remoteId: '33612345678',
+          kind: 'direct',
+          title: 'Alice',
+          unreadCount: 2,
+          lastActivityAt: 1_700_000_000_000,
+        },
+        {
+          accountId,
+          remoteId: 'group-1@g.us',
+          kind: 'group',
+          title: 'Group group-1@g.us',
+          unreadCount: 0,
+          lastActivityAt: 1_700_000_500_000,
+        },
+      ]);
+      const messageEvents = events.filter((event) => event.type === 'message.upserted');
+      expect(messageEvents).toHaveLength(1);
+      const historyMessage = messageEvents[0];
+      if (historyMessage?.type !== 'message.upserted') {
+        throw new Error('Expected a message.upserted event');
+      }
+      expect(historyMessage.message).toMatchObject({
+        remoteId: 'hist-1',
+        chatRemoteId: '33612345678',
+        direction: 'incoming',
+        sentAt: 1_700_000_000_000,
+      });
+    });
+
+    it('omits lastActivityAt when a synced chat has no activity timestamp', async () => {
+      const { events } = await openConnectedSession(authDir);
+
+      requireSocket(0).emit('messaging-history.set', {
+        chats: [{ id: '33612345678@s.whatsapp.net', name: 'Alice' }],
+        messages: [],
+      });
+
+      expect(chatUpserts(events)[0]).not.toHaveProperty('lastActivityAt');
+    });
+
+    it('converts protobuf Long timestamps to milliseconds', async () => {
+      const { events } = await openConnectedSession(authDir);
+      const longTimestamp = {
+        low: 1_700_000_000,
+        high: 0,
+        unsigned: false,
+        valueOf: () => 1_700_000_000,
+      };
+
+      requireSocket(0).emit('chats.upsert', [
+        { id: '33612345678@s.whatsapp.net', name: 'Alice', conversationTimestamp: longTimestamp },
+      ]);
+
+      expect(chatUpserts(events)[0]).toMatchObject({ lastActivityAt: 1_700_000_000_000 });
+    });
+  });
+
+  describe('chats.update unread-delta merge', () => {
+    it('adds positive deltas to the known base and clamps at zero', async () => {
+      const { events } = await openConnectedSession(authDir);
+      requireSocket(0).emit('messaging-history.set', {
+        chats: [
+          {
+            id: '33612345678@s.whatsapp.net',
+            name: 'Alice',
+            unreadCount: 2,
+            conversationTimestamp: 1_700_000_000,
+          },
+        ],
+        messages: [],
+      });
+
+      requireSocket(0).emit('chats.update', [
+        {
+          id: '33612345678@s.whatsapp.net',
+          unreadCount: 1,
+          conversationTimestamp: 1_700_000_100,
+        },
+      ]);
+      expect(chatUpserts(events).at(-1)).toMatchObject({
+        unreadCount: 3,
+        lastActivityAt: 1_700_000_100_000,
+      });
+
+      requireSocket(0).emit('chats.update', [
+        { id: '33612345678@s.whatsapp.net', unreadCount: -5 },
+      ]);
+      expect(chatUpserts(events).at(-1)).toMatchObject({ unreadCount: 0 });
+    });
+
+    it('treats null and zero unreadCount as absolute mark-read', async () => {
+      const { events } = await openConnectedSession(authDir);
+      requireSocket(0).emit('messaging-history.set', {
+        chats: [{ id: '33612345678@s.whatsapp.net', name: 'Alice', unreadCount: 4 }],
+        messages: [],
+      });
+
+      requireSocket(0).emit('chats.update', [{ id: '33612345678@s.whatsapp.net', unreadCount: 0 }]);
+      expect(chatUpserts(events).at(-1)).toMatchObject({ unreadCount: 0 });
+
+      requireSocket(0).emit('chats.update', [{ id: '33612345678@s.whatsapp.net', unreadCount: 3 }]);
+      requireSocket(0).emit('chats.update', [
+        { id: '33612345678@s.whatsapp.net', unreadCount: null },
+      ]);
+      expect(chatUpserts(events).at(-1)).toMatchObject({ unreadCount: 0 });
+    });
+
+    it('keeps the base unreadCount when the update omits it', async () => {
+      const { events } = await openConnectedSession(authDir);
+      requireSocket(0).emit('messaging-history.set', {
+        chats: [{ id: '33612345678@s.whatsapp.net', name: 'Alice', unreadCount: 2 }],
+        messages: [],
+      });
+
+      requireSocket(0).emit('chats.update', [
+        { id: '33612345678@s.whatsapp.net', name: 'Renamed' },
+      ]);
+
+      expect(chatUpserts(events).at(-1)).toMatchObject({ unreadCount: 2, title: 'Renamed' });
+    });
+
+    it('treats protobuf Long unreadCount as absolute', async () => {
+      const { events } = await openConnectedSession(authDir);
+      requireSocket(0).emit('messaging-history.set', {
+        chats: [{ id: '33612345678@s.whatsapp.net', name: 'Alice', unreadCount: 2 }],
+        messages: [],
+      });
+
+      requireSocket(0).emit('chats.update', [
+        {
+          id: '33612345678@s.whatsapp.net',
+          unreadCount: { low: 7, high: 0, unsigned: false, valueOf: () => 7 },
+        },
+      ]);
+
+      expect(chatUpserts(events).at(-1)).toMatchObject({ unreadCount: 7 });
+    });
+
+    it('falls back to a zero base for updates about unknown chats', async () => {
+      const { events } = await openConnectedSession(authDir);
+
+      requireSocket(0).emit('chats.update', [
+        { id: '33698765432@s.whatsapp.net', unreadCount: 1, lastMsgTimestamp: 1_700_000_200 },
+      ]);
+
+      expect(chatUpserts(events).at(-1)).toEqual({
+        accountId,
+        remoteId: '33698765432',
+        kind: 'direct',
+        title: '33698765432',
+        unreadCount: 1,
+        lastActivityAt: 1_700_000_200_000,
+      });
+    });
+
+    it('keeps known chat bases across reconnects', async () => {
+      const { session, events } = await openConnectedSession(authDir);
+      requireSocket(0).emit('messaging-history.set', {
+        chats: [{ id: '33612345678@s.whatsapp.net', name: 'Alice', unreadCount: 2 }],
+        messages: [],
+      });
+
+      closeSocket(requireSocket(0), { message: 'connection reset' });
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(harness.sockets).toHaveLength(2);
+      requireSocket(1).emit('connection.update', { connection: 'open' });
+
+      requireSocket(1).emit('chats.update', [{ id: '33612345678@s.whatsapp.net', unreadCount: 1 }]);
+
+      expect(chatUpserts(events).at(-1)).toMatchObject({ unreadCount: 3 });
+      expect(session.getConnectionState().kind).toBe('connected');
     });
   });
 });

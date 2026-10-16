@@ -12,6 +12,7 @@ import type { AccountId } from '../../../domain';
 import type {
   AuthenticationState,
   Chat,
+  ChatUpdate,
   WAVersion,
   WASocket,
   proto,
@@ -43,6 +44,7 @@ function normalizeBaileysChat(accountId: AccountId, jid: string, chat: Chat): Pr
   const isGroup = isGroupJid(jid);
   const title = chat.name ?? (isGroup ? `Group ${remoteId}` : extractPhoneFromJid(jid));
   const unreadCount = chat.unreadCount ?? 0;
+  const activitySeconds = chat.conversationTimestamp ?? chat.lastMessageRecvTimestamp;
 
   return {
     accountId,
@@ -50,6 +52,9 @@ function normalizeBaileysChat(accountId: AccountId, jid: string, chat: Chat): Pr
     kind: isGroup ? 'group' : 'direct',
     title,
     unreadCount,
+    ...(activitySeconds === undefined || activitySeconds === null
+      ? {}
+      : { lastActivityAt: Number(activitySeconds) * 1000 }),
   };
 }
 
@@ -121,6 +126,7 @@ export class WhatsappMessagingSession implements MessagingSession {
   #version: WAVersion | null = null;
   #authState: AuthenticationState | null = null;
   #saveCreds: (() => Promise<void>) | null = null;
+  readonly #knownChats = new Map<string, ProviderChat>();
   #eventsSubscribed = false;
   #reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   #reconnectAttempt = 0;
@@ -429,10 +435,32 @@ export class WhatsappMessagingSession implements MessagingSession {
 
     socket.ev.on('chats.upsert', (chats) => {
       for (const chat of chats) {
-        this.#emit({
-          type: 'chat.upserted',
-          chat: normalizeBaileysChat(this.accountId, chat.id, chat),
-        });
+        const normalized = normalizeBaileysChat(this.accountId, chat.id, chat);
+        this.#knownChats.set(normalized.remoteId, normalized);
+        this.#emit({ type: 'chat.upserted', chat: normalized });
+      }
+    });
+
+    // History sync (M06): Baileys delivers the conversation list and recent messages
+    // reverse-chronologically on connect; map them onto the normalized events the
+    // projection already understands.
+    socket.ev.on('messaging-history.set', ({ chats, messages }) => {
+      for (const chat of chats) {
+        const normalized = normalizeBaileysChat(this.accountId, chat.id, chat);
+        this.#knownChats.set(normalized.remoteId, normalized);
+        this.#emit({ type: 'chat.upserted', chat: normalized });
+      }
+      for (const message of messages) {
+        const normalized = normalizeBaileysMessage(this.accountId, message);
+        if (normalized) {
+          this.#emit({ type: 'message.upserted', message: normalized });
+        }
+      }
+    });
+
+    socket.ev.on('chats.update', (updates) => {
+      for (const update of updates) {
+        this.#mergeChatUpdate(update);
       }
     });
 
@@ -445,13 +473,14 @@ export class WhatsappMessagingSession implements MessagingSession {
       }
     });
   }
-
   #cleanupSocket(): void {
     const socket = this.#socket;
     if (!socket) return;
 
     socket.ev.removeAllListeners('connection.update');
     socket.ev.removeAllListeners('chats.upsert');
+    socket.ev.removeAllListeners('chats.update');
+    socket.ev.removeAllListeners('messaging-history.set');
     socket.ev.removeAllListeners('messages.upsert');
     socket.ev.removeAllListeners('creds.update');
     socket.end(undefined);
@@ -461,6 +490,51 @@ export class WhatsappMessagingSession implements MessagingSession {
     // reconnect can never run on stale in-memory credentials.
     this.#authState = null;
     this.#saveCreds = null;
+    // #knownChats survives reconnects: history.set re-anchors absolute values, and
+    // chats.update deltas need the last known base to merge correctly.
+  }
+
+  // Baileys `chats.update` carries unreadCount as a DELTA: process-message.js builds a
+  // fresh patch `unreadCount: (chat.unreadCount || 0) + 1` per incoming message and
+  // event-buffer.js merges patches additively. `null`/`0` are absolute marks-read;
+  // protobuf Longs arrive only from absolute server payloads (history/upsert), so they
+  // are treated as absolute here.
+  #mergeChatUpdate(update: ChatUpdate): void {
+    if (typeof update.id !== 'string') {
+      return;
+    }
+    const remoteId = extractRemoteIdFromJid(update.id);
+    const isGroup = isGroupJid(update.id);
+    const base = this.#knownChats.get(remoteId) ?? {
+      accountId: this.accountId,
+      remoteId,
+      kind: isGroup ? 'group' : 'direct',
+      title: update.name ?? (isGroup ? `Group ${remoteId}` : extractPhoneFromJid(update.id)),
+      unreadCount: 0,
+    };
+
+    const unread = update.unreadCount;
+    const unreadCount =
+      unread === null || unread === 0
+        ? 0
+        : typeof unread === 'number'
+          ? Math.max(base.unreadCount + unread, 0)
+          : unread === undefined
+            ? base.unreadCount
+            : Number(unread);
+
+    const activitySeconds = update.conversationTimestamp ?? update.lastMsgTimestamp;
+    const merged: ProviderChat = {
+      ...base,
+      ...(typeof update.name === 'string' ? { title: update.name } : {}),
+      ...(activitySeconds === undefined || activitySeconds === null
+        ? {}
+        : { lastActivityAt: Number(activitySeconds) * 1000 }),
+      unreadCount,
+    };
+
+    this.#knownChats.set(remoteId, merged);
+    this.#emit({ type: 'chat.upserted', chat: merged });
   }
 
   #removeAuthDirectory(): void {

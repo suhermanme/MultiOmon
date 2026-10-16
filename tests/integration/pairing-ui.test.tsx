@@ -66,8 +66,8 @@ describe('pairing UI', () => {
           subscribe: vi.fn().mockReturnValue(vi.fn()),
         },
         messaging: {
-          listChats: vi.fn().mockResolvedValue([]),
-          listMessages: vi.fn().mockResolvedValue([]),
+          listChats: vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
+          listMessages: vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
           subscribe: vi.fn().mockReturnValue(vi.fn()),
         },
         pairing: {
