@@ -9,6 +9,7 @@ import type {
   ContactId,
   Message,
   MessageId,
+  Receipt,
 } from '../../domain';
 
 export interface MessagePageCursor {
@@ -69,12 +70,18 @@ export interface AttachmentRepository {
   getById(accountId: AccountId, attachmentId: AttachmentId): Attachment | null;
 }
 
+export interface ReceiptRepository {
+  save(receipt: Receipt): void;
+  listByMessage(accountId: AccountId, messageId: MessageId): readonly Receipt[];
+}
+
 export interface RepositoryBundle {
   readonly accounts: AccountRepository;
   readonly attachments: AttachmentRepository;
   readonly chats: ChatRepository;
   readonly contacts: ContactRepository;
   readonly messages: MessageRepository;
+  readonly receipts: ReceiptRepository;
 }
 
 export interface TransactionRunner {

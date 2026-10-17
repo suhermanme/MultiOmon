@@ -7,6 +7,7 @@ import type {
   PairingUpdateDto,
   RuntimeInfo,
   MessageContentDto,
+  MessageDto,
 } from '../../shared/contracts/desktop-api';
 import { useAccountStore } from './account-store';
 import { useMessagingStore } from './messaging-store';
@@ -81,6 +82,13 @@ function dayLabel(timestamp: number): string {
 function senderLabel(senderRemoteId: string): string {
   return senderRemoteId.split('@')[0] ?? senderRemoteId;
 }
+
+const RECEIPT_STATUS_LABELS: Record<NonNullable<MessageDto['receiptStatus']>, string> = {
+  sent: 'Sent',
+  delivered: 'Delivered',
+  read: 'Read',
+  played: 'Played',
+};
 
 function fileSizeLabel(sizeBytes: number | undefined): string | null {
   if (sizeBytes === undefined) return null;
@@ -489,6 +497,10 @@ export function App(): React.JSX.Element {
     loadOlderMessages,
     requestEarlierHistory,
     historyLoading,
+    sending,
+    sendError,
+    pendingMessage,
+    sendText,
   } = useMessagingStore();
   const activeAccount =
     snapshot.accounts.find((account) => account.id === snapshot.activeAccountId) ?? null;
@@ -539,6 +551,7 @@ export function App(): React.JSX.Element {
   };
 
   const [chatSearch, setChatSearch] = useState('');
+  const [replyToMessageId, setReplyToMessageId] = useState<string | null>(null);
   const chatQuery = chatSearch.trim().toLowerCase();
   const visibleChats =
     chatQuery.length === 0
@@ -546,6 +559,19 @@ export function App(): React.JSX.Element {
       : chats.filter((chat) => chat.title.toLowerCase().includes(chatQuery));
 
   const selectedChat = chats.find((chat) => chat.id === selectedChatId) ?? null;
+  const replyTarget = messages.find((message) => message.id === replyToMessageId) ?? null;
+  const activeAccountId = activeAccount?.id;
+  const accountConnected = activeAccount?.connectionState.kind === 'connected';
+  const selectedChatUnreadCount = selectedChat?.unreadCount ?? 0;
+
+  useEffect(() => {
+    if (!activeAccountId || !accountConnected || !selectedChatId || selectedChatUnreadCount === 0) {
+      return;
+    }
+    void window.multiomon.messaging
+      .markRead(activeAccountId, selectedChatId)
+      .catch(() => undefined);
+  }, [accountConnected, activeAccountId, selectedChatId, selectedChatUnreadCount]);
 
   return (
     <main className="app-shell">
@@ -738,6 +764,19 @@ export function App(): React.JSX.Element {
                         <div className="date-separator">{dayLabel(message.sentAt)}</div>
                       ) : null}
                       <article className={`message-bubble message-${message.direction}`}>
+                        {message.replyToMessageId && (
+                          <span className="reply-quote">
+                            {(() => {
+                              const original = messages.find(
+                                ({ id }) => id === message.replyToMessageId,
+                              );
+                              if (!original) return 'Reply to an earlier message';
+                              return original.content.kind === 'media'
+                                ? 'Reply to media'
+                                : original.content.text;
+                            })()}
+                          </span>
+                        )}
                         {message.content.kind === 'system' ? (
                           <span className="message-kind">System</span>
                         ) : message.direction === 'incoming' && message.senderRemoteId ? (
@@ -750,6 +789,22 @@ export function App(): React.JSX.Element {
                         ) : (
                           <p>{message.content.text}</p>
                         )}
+                        <button
+                          className="message-reply"
+                          type="button"
+                          onClick={() => setReplyToMessageId(message.id)}
+                        >
+                          Reply
+                        </button>
+                        {message.direction === 'outgoing' && message.receiptStatus ? (
+                          <span
+                            className={`receipt-status receipt-${message.receiptStatus}`}
+                            aria-label={RECEIPT_STATUS_LABELS[message.receiptStatus]}
+                            title={RECEIPT_STATUS_LABELS[message.receiptStatus]}
+                          >
+                            {message.receiptStatus === 'sent' ? '✓' : '✓✓'}
+                          </span>
+                        ) : null}
                         <time
                           className="message-time"
                           dateTime={new Date(message.sentAt).toISOString()}
@@ -763,10 +818,31 @@ export function App(): React.JSX.Element {
                     </Fragment>
                   );
                 })}
+                {pendingMessage?.chatId === selectedChat.id && (
+                  <article
+                    className="message-bubble message-outgoing message-pending"
+                    aria-label="Sending message"
+                  >
+                    {pendingMessage.replyToMessageId && (
+                      <span className="reply-quote">Replying to a message</span>
+                    )}
+                    <p>{pendingMessage.text}</p>
+                    <span className="message-time">Sending…</span>
+                  </article>
+                )}
               </div>
-              <div className="projection-note">
-                Read-only local history · sending arrives in M08
-              </div>
+              <MessageComposer
+                connected={activeAccount?.connectionState.kind === 'connected'}
+                sending={sending}
+                error={sendError}
+                replyTarget={replyTarget}
+                onCancelReply={() => setReplyToMessageId(null)}
+                onSend={async (text, replyId) => {
+                  const sent = await sendText(text, replyId);
+                  if (sent) setReplyToMessageId(null);
+                  return sent;
+                }}
+              />
             </div>
           ) : (
             <div className="empty-conversation">
@@ -793,5 +869,73 @@ export function App(): React.JSX.Element {
         </section>
       </div>
     </main>
+  );
+}
+
+function MessageComposer({
+  connected,
+  sending,
+  error,
+  replyTarget,
+  onCancelReply,
+  onSend,
+}: {
+  readonly connected: boolean;
+  readonly sending: boolean;
+  readonly error: string | null;
+  readonly replyTarget: MessageDto | null;
+  readonly onCancelReply: () => void;
+  readonly onSend: (text: string, replyToMessageId?: string) => Promise<boolean>;
+}): React.JSX.Element {
+  const [draft, setDraft] = useState('');
+  const submit = async (): Promise<void> => {
+    if (!connected || sending || draft.trim().length === 0) return;
+    if (await onSend(draft, replyTarget?.id)) setDraft('');
+  };
+  return (
+    <form
+      className="message-composer"
+      onSubmit={(event) => {
+        event.preventDefault();
+        void submit();
+      }}
+    >
+      {error && (
+        <p className="composer-error" role="alert">
+          {error}
+        </p>
+      )}
+      {replyTarget && (
+        <div className="reply-preview">
+          <span>
+            <strong>Replying to</strong>{' '}
+            {replyTarget.content.kind === 'media' ? '[Media]' : replyTarget.content.text}
+          </span>
+          <button type="button" aria-label="Cancel reply" onClick={onCancelReply}>
+            ×
+          </button>
+        </div>
+      )}
+      <div className="composer-input-row">
+        <textarea
+          aria-label="Message"
+          placeholder={connected ? 'Write a message…' : 'Connect this account to send a message'}
+          value={draft}
+          disabled={!connected || sending}
+          rows={1}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && !event.shiftKey) {
+              event.preventDefault();
+              void submit();
+            }
+          }}
+        />
+        <button type="submit" disabled={!connected || sending || draft.trim().length === 0}>
+          {sending ? 'Sending…' : 'Send'}
+        </button>
+      </div>
+      <span className="composer-hint">Enter to send · Shift + Enter for a new line</span>
+    </form>
   );
 }

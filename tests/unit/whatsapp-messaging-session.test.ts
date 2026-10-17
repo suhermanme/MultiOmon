@@ -942,4 +942,93 @@ describe('WhatsappMessagingSession', () => {
       expect(session.getConnectionState().kind).toBe('connected');
     });
   });
+
+  describe('receipt ingestion', () => {
+    function receiptEvents(events: readonly MessagingEvent[]) {
+      return events.flatMap((event) => (event.type === 'message.receipted' ? [event] : []));
+    }
+
+    it('maps messages.update delivery acks to receipt events', async () => {
+      const { events } = await openConnectedSession(authDir);
+
+      requireSocket(0).emit('messages.update', [
+        {
+          key: { id: 'ACK1', remoteJid: '33612345678@s.whatsapp.net', fromMe: true },
+          update: { status: 3 },
+        },
+      ]);
+
+      expect(receiptEvents(events)).toEqual([
+        {
+          type: 'message.receipted',
+          accountId,
+          messageRemoteId: 'ACK1',
+          recipientRemoteId: '33612345678@s.whatsapp.net',
+          status: 'delivered',
+          occurredAt: Date.now(),
+        },
+      ]);
+    });
+
+    it('maps ack, read, and played statuses and ignores non-receipt updates', async () => {
+      const { events } = await openConnectedSession(authDir);
+
+      requireSocket(0).emit('messages.update', [
+        { key: { id: 'A', remoteJid: 'x@s.whatsapp.net', fromMe: true }, update: { status: 2 } },
+        { key: { id: 'B', remoteJid: 'x@s.whatsapp.net', fromMe: true }, update: { status: 4 } },
+        { key: { id: 'C', remoteJid: 'x@s.whatsapp.net', fromMe: true }, update: { status: 5 } },
+        { key: { id: 'D', remoteJid: 'x@s.whatsapp.net', fromMe: true }, update: { status: 0 } },
+        { key: { id: 'E', remoteJid: 'x@s.whatsapp.net', fromMe: true }, update: { status: null } },
+        { key: { id: 'F', remoteJid: 'x@s.whatsapp.net', fromMe: false }, update: { status: 4 } },
+        { key: { id: 'G', remoteJid: 'x@s.whatsapp.net', fromMe: true }, update: {} },
+      ]);
+
+      expect(receiptEvents(events).map((event) => [event.messageRemoteId, event.status])).toEqual([
+        ['A', 'sent'],
+        ['B', 'read'],
+        ['C', 'played'],
+      ]);
+    });
+
+    it('maps group participant receipts from message-receipt.update', async () => {
+      const { events } = await openConnectedSession(authDir);
+
+      requireSocket(0).emit('message-receipt.update', [
+        {
+          key: {
+            id: 'GRP1',
+            remoteJid: '1234567890-123@g.us',
+            fromMe: true,
+            participant: '33611111111@s.whatsapp.net',
+          },
+          receipt: { receiptTimestamp: 1_700_000_100 },
+        },
+        {
+          key: {
+            id: 'GRP1',
+            remoteJid: '1234567890-123@g.us',
+            fromMe: true,
+            participant: '33622222222@s.whatsapp.net',
+          },
+          receipt: { readTimestamp: 1_700_000_200 },
+        },
+        {
+          key: {
+            id: 'GRP2',
+            remoteJid: '1234567890-123@g.us',
+            fromMe: false,
+            participant: '33633333333@s.whatsapp.net',
+          },
+          receipt: { readTimestamp: 1_700_000_300 },
+        },
+      ]);
+
+      expect(receiptEvents(events).map((event) => [event.recipientRemoteId, event.status])).toEqual(
+        [
+          ['33611111111@s.whatsapp.net', 'delivered'],
+          ['33622222222@s.whatsapp.net', 'read'],
+        ],
+      );
+    });
+  });
 });

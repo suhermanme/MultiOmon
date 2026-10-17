@@ -403,3 +403,41 @@ video, audio, sticker, and document controls.
 Consequences:
 Downloaded bytes cross IPC once when opened; a future streaming protocol can replace data URLs for
 very large media without changing the durable attachment model.
+
+## ADR-027 — Receipts are projected only for outgoing messages and aggregated to the weakest status
+
+Decision:
+Provider adapters map Baileys `message-receipt.update` and deterministic mock acknowledgements to
+the transport-neutral `message.receipted` event. `MessagingService.#projectReceipt` resolves the
+provider message remote id, drops events that do not reference a projected outgoing message, and
+upserts one `receipts` row per recipient (migration v7) with monotonic status promotion.
+`MessagingView` aggregates a message's per-recipient receipts into one `MessageDto.receiptStatus`
+using the weakest status.
+
+Reason:
+Read updates for incoming messages describe activity on the account's other devices, not delivery
+feedback for this client. Per-recipient rows preserve group semantics that a single status column
+cannot express, and the weakest status is the only state confirmed for every recipient.
+
+Consequences:
+Receipts that arrive before their message row are dropped because the projection needs the durable
+message id for the foreign key. Statuses never regress, and the renderer shows one tick state per
+outgoing message: single tick for sent, double tick for delivered and read.
+
+## ADR-028 — Mark-read scans decrement unread when the page guard truncates them
+
+Decision:
+`MessagingService.markChatRead` collects incoming message remote ids from up to 200 pages of 200
+messages, sends them to the provider session's `markRead`, then updates the local chat. When the
+scan exhausts local history or collects at least the stored unread count, the count is set to zero.
+When the page guard truncates the scan, the count is decremented by the number of ids marked.
+
+Reason:
+Provider unread counts are authoritative deltas that can exceed locally persisted history. Zeroing
+the count without confirmation would hide messages that remain unread on the provider, while
+leaving it unchanged would re-mark the same newest window on every open with no local progress.
+
+Consequences:
+Chats with more than 40,000 unread messages converge across repeated opens. New provider deltas
+remain the source of truth for fresh activity, and a scan that marks nothing leaves the count
+untouched.

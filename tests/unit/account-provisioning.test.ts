@@ -87,6 +87,10 @@ class FakeMessagingSession implements MessagingSession {
     return Promise.reject(new Error(`Unexpected sendText for ${request.chatRemoteId}`));
   }
 
+  markRead(): Promise<void> {
+    return Promise.resolve();
+  }
+
   requestHistory(): Promise<void> {
     return Promise.resolve();
   }
@@ -164,6 +168,10 @@ function createHarness(options: { mintAccountId?: () => AccountId } = {}) {
       getByRemoteId: () => null,
       getOldestByChat: () => null,
       listPage: () => ({ items: [], nextCursor: null }),
+    },
+    receipts: {
+      save: () => undefined,
+      listByMessage: () => [],
     },
   } satisfies RepositoryBundle);
   const accountManager = new AccountManager();

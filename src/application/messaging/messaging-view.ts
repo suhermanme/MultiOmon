@@ -4,8 +4,17 @@ import type {
   ChatRepository,
   MessagePageCursor,
   MessageRepository,
+  ReceiptRepository,
 } from '../ports/repositories';
-import type { AccountId, Chat, ChatId, Message, MessageContent } from '../../domain';
+import type {
+  AccountId,
+  Chat,
+  ChatId,
+  Message,
+  MessageContent,
+  Receipt,
+  ReceiptStatus,
+} from '../../domain';
 import { createChatId, createMessageId } from '../../domain';
 import type {
   ChatPageDto,
@@ -43,7 +52,25 @@ function toMessageContentDto(
   }
 }
 
-function toMessageDto(message: Message, attachments?: AttachmentRepository): MessageDto {
+// The visible tick reflects the weakest recipient: a message counts as
+// delivered only once every recipient acknowledged it, read once all read it.
+const RECEIPT_RANK: Record<ReceiptStatus, number> = { sent: 0, delivered: 1, read: 2, played: 3 };
+
+function aggregateReceiptStatus(receipts: readonly Receipt[]): ReceiptStatus | undefined {
+  let weakest: ReceiptStatus | undefined;
+  for (const receipt of receipts) {
+    if (weakest === undefined || RECEIPT_RANK[receipt.status] < RECEIPT_RANK[weakest]) {
+      weakest = receipt.status;
+    }
+  }
+  return weakest;
+}
+
+function toMessageDto(
+  message: Message,
+  attachments?: AttachmentRepository,
+  receiptStatus?: ReceiptStatus,
+): MessageDto {
   return {
     id: message.id,
     accountId: message.accountId,
@@ -52,6 +79,10 @@ function toMessageDto(message: Message, attachments?: AttachmentRepository): Mes
     sentAt: message.sentAt,
     content: toMessageContentDto(message.accountId, message.content, attachments),
     ...(message.senderRemoteId === undefined ? {} : { senderRemoteId: message.senderRemoteId }),
+    ...(message.replyToMessageId === undefined
+      ? {}
+      : { replyToMessageId: message.replyToMessageId }),
+    ...(receiptStatus === undefined ? {} : { receiptStatus }),
   };
 }
 
@@ -119,15 +150,18 @@ export class MessagingView {
   readonly #chats: ChatRepository;
   readonly #messages: MessageRepository;
   readonly #attachments?: AttachmentRepository;
+  readonly #receipts?: ReceiptRepository;
 
   constructor(
     chats: ChatRepository,
     messages: MessageRepository,
     attachments?: AttachmentRepository,
+    receipts?: ReceiptRepository,
   ) {
     this.#chats = chats;
     this.#messages = messages;
     this.#attachments = attachments;
+    this.#receipts = receipts;
   }
 
   listChats(accountId: AccountId, options: ChatPageOptionsDto = {}): ChatPageDto {
@@ -147,7 +181,17 @@ export class MessagingView {
     const { limit, cursor } = fromMessagePageOptions(options);
     const page = this.#messages.listPage(accountId, chatId, limit, cursor);
     return {
-      items: [...page.items].reverse().map((message) => toMessageDto(message, this.#attachments)),
+      items: [...page.items]
+        .reverse()
+        .map((message) =>
+          toMessageDto(
+            message,
+            this.#attachments,
+            message.direction === 'outgoing' && this.#receipts
+              ? aggregateReceiptStatus(this.#receipts.listByMessage(message.accountId, message.id))
+              : undefined,
+          ),
+        ),
       nextCursor: page.nextCursor
         ? { sentAt: page.nextCursor.sentAt, messageId: page.nextCursor.messageId }
         : null,

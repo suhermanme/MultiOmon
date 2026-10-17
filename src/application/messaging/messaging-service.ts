@@ -5,7 +5,7 @@ import type {
   MessagingProvider,
   MessagingSession,
 } from '../ports/messaging-provider';
-import type { RepositoryBundle, TransactionRunner } from '../ports/repositories';
+import type { MessagePageCursor, RepositoryBundle, TransactionRunner } from '../ports/repositories';
 import {
   createChatId,
   createAttachmentId,
@@ -14,6 +14,7 @@ import {
   type AccountId,
   type AttachmentId,
   type ChatId,
+  type MessageId,
 } from '../../domain';
 import { ProviderAccountSession } from './provider-account-session';
 
@@ -47,9 +48,11 @@ export class MessagingApplicationError extends Error {
     | 'event-account-mismatch'
     | 'missing-session'
     | 'missing-chat'
+    | 'missing-message'
     | 'missing-history-anchor'
     | 'missing-attachment'
-    | 'media-unavailable';
+    | 'media-unavailable'
+    | 'invalid-message';
 
   constructor(code: MessagingApplicationError['code'], message: string) {
     super(message);
@@ -130,6 +133,93 @@ export class MessagingService {
       oldestSentAt: oldest.sentAt,
       count: Math.min(Math.max(Math.trunc(count), 1), 200),
     });
+  }
+
+  async markChatRead(accountId: AccountId, chatId: ChatId): Promise<void> {
+    const chat = this.#repositories.chats.getById(accountId, chatId);
+    if (!chat) {
+      throw new MessagingApplicationError('missing-chat', `Chat ${chatId} does not exist`);
+    }
+    if (chat.unreadCount === 0) return;
+    const unreadRemoteIds: string[] = [];
+    let cursor: MessagePageCursor | undefined;
+    let historyExhausted = false;
+    for (
+      let pageNumber = 0;
+      pageNumber < 200 && unreadRemoteIds.length < chat.unreadCount;
+      pageNumber += 1
+    ) {
+      const page = this.#repositories.messages.listPage(accountId, chatId, 200, cursor);
+      unreadRemoteIds.push(
+        ...page.items
+          .filter((message) => message.direction === 'incoming')
+          .map((message) => message.remoteId),
+      );
+      if (!page.nextCursor) {
+        historyExhausted = true;
+        break;
+      }
+      cursor = page.nextCursor;
+    }
+    await this.getSession(accountId).markRead(chat.remoteId, unreadRemoteIds);
+    // Partial-unread semantics: when the scan stops at its page guard, only the
+    // collected messages were acknowledged by the provider. Decrement the local
+    // count by what was marked so repeated opens converge instead of re-marking
+    // the same newest window forever.
+    const fullyMarked = historyExhausted || unreadRemoteIds.length >= chat.unreadCount;
+    if (!fullyMarked && unreadRemoteIds.length === 0) return;
+    const remainingUnread = fullyMarked ? 0 : chat.unreadCount - unreadRemoteIds.length;
+    const change = this.#transactionRunner.runInTransaction(() => {
+      this.#repositories.chats.save({ ...chat, unreadCount: remainingUnread });
+      return { accountId, chatId };
+    });
+    for (const listener of this.#listeners) listener(change);
+  }
+
+  async sendText(
+    accountId: AccountId,
+    chatId: ChatId,
+    text: string,
+    replyToMessageId?: MessageId,
+  ): Promise<void> {
+    const normalizedText = text.trim();
+    if (normalizedText.length === 0) {
+      throw new MessagingApplicationError('invalid-message', 'Message text cannot be empty');
+    }
+    const chat = this.#repositories.chats.getById(accountId, chatId);
+    if (!chat) {
+      throw new MessagingApplicationError('missing-chat', `Chat ${chatId} does not exist`);
+    }
+
+    // Sessions normally emit message.upserted after a successful send. Project the returned
+    // message as a fallback too, so providers that only return the sent message still update the
+    // local timeline. The unique remote ID makes this safe when the event already projected it.
+    let replyToRemoteMessageId: string | undefined;
+    if (replyToMessageId !== undefined) {
+      const reply = this.#repositories.messages.getById(accountId, replyToMessageId);
+      if (!reply || reply.chatId !== chatId) {
+        throw new MessagingApplicationError(
+          'missing-message',
+          'Reply target is not in this conversation',
+        );
+      }
+      replyToRemoteMessageId = reply.remoteId;
+    }
+    const message = await this.getSession(accountId).sendText({
+      chatRemoteId: chat.remoteId,
+      text: normalizedText,
+      ...(replyToRemoteMessageId === undefined ? {} : { replyToRemoteMessageId }),
+    });
+    if (message.accountId !== accountId || message.chatRemoteId !== chat.remoteId) {
+      throw new MessagingApplicationError(
+        'event-account-mismatch',
+        'Provider returned a message for a different account or conversation',
+      );
+    }
+    const change = this.#transactionRunner.runInTransaction(() => this.#projectMessage(message));
+    if (change) {
+      for (const listener of this.#listeners) listener(change);
+    }
   }
 
   async downloadAttachment(
@@ -236,7 +326,11 @@ export class MessagingService {
       return;
     }
     const eventAccountId =
-      event.type === 'chat.upserted' ? event.chat.accountId : event.message.accountId;
+      event.type === 'chat.upserted'
+        ? event.chat.accountId
+        : event.type === 'message.receipted'
+          ? event.accountId
+          : event.message.accountId;
     if (eventAccountId !== expectedAccountId) {
       throw new MessagingApplicationError(
         'event-account-mismatch',
@@ -244,11 +338,11 @@ export class MessagingService {
       );
     }
 
-    const change = this.#transactionRunner.runInTransaction(() =>
-      event.type === 'chat.upserted'
-        ? this.#projectChat(event.chat)
-        : this.#projectMessage(event.message),
-    );
+    const change = this.#transactionRunner.runInTransaction(() => {
+      if (event.type === 'chat.upserted') return this.#projectChat(event.chat);
+      if (event.type === 'message.receipted') return this.#projectReceipt(event);
+      return this.#projectMessage(event.message);
+    });
     if (!change) return;
     for (const listener of this.#listeners) listener(change);
   }
@@ -343,5 +437,26 @@ export class MessagingService {
       });
     }
     return inserted ? { accountId: message.accountId, chatId } : null;
+  }
+
+  #projectReceipt(
+    event: Extract<MessagingEvent, { type: 'message.receipted' }>,
+  ): MessagingProjectionChange | null {
+    const message = this.#repositories.messages.getByRemoteId(
+      event.accountId,
+      event.messageRemoteId,
+    );
+    // Receipts only describe feedback about messages this account sent. Provider
+    // read updates for incoming messages (our other devices) are not delivery
+    // feedback and must not create receipt rows.
+    if (!message || message.direction !== 'outgoing') return null;
+    this.#repositories.receipts.save({
+      accountId: event.accountId,
+      messageId: message.id,
+      recipientRemoteId: event.recipientRemoteId,
+      status: event.status,
+      occurredAt: event.occurredAt,
+    });
+    return { accountId: event.accountId, chatId: message.chatId };
   }
 }

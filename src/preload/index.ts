@@ -61,6 +61,16 @@ const desktopApi: DesktopApi = Object.freeze({
       ) as Promise<MessagePageDto>,
     requestHistory: (accountId: string, chatId: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.messageHistory, accountId, chatId) as Promise<void>,
+    markRead: (accountId: string, chatId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.messageMarkRead, accountId, chatId) as Promise<void>,
+    sendText: (accountId: string, chatId: string, text: string, replyToMessageId?: string) =>
+      ipcRenderer.invoke(
+        IPC_CHANNELS.messageSendText,
+        accountId,
+        chatId,
+        text,
+        replyToMessageId,
+      ) as Promise<void>,
     downloadMedia: (accountId: string, attachmentId: string) =>
       ipcRenderer.invoke(
         IPC_CHANNELS.mediaDownload,

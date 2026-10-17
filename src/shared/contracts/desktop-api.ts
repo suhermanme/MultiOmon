@@ -13,6 +13,8 @@ export const IPC_CHANNELS = {
   chatList: 'messaging:chats',
   messageList: 'messaging:messages',
   messageHistory: 'messaging:history',
+  messageMarkRead: 'messaging:mark-read',
+  messageSendText: 'messaging:send-text',
   mediaDownload: 'messaging:media-download',
   messagingChanged: 'messaging:changed',
 } as const;
@@ -88,6 +90,8 @@ export interface MessageDto {
   readonly senderRemoteId?: string;
   readonly sentAt: number;
   readonly content: MessageContentDto;
+  readonly replyToMessageId?: string;
+  readonly receiptStatus?: 'sent' | 'delivered' | 'read' | 'played';
 }
 
 export interface MessagingChangeDto {
@@ -167,6 +171,13 @@ export interface DesktopApi {
       options?: MessagePageOptionsDto,
     ) => Promise<MessagePageDto>;
     readonly requestHistory: (accountId: string, chatId: string) => Promise<void>;
+    readonly markRead: (accountId: string, chatId: string) => Promise<void>;
+    readonly sendText: (
+      accountId: string,
+      chatId: string,
+      text: string,
+      replyToMessageId?: string,
+    ) => Promise<void>;
     readonly downloadMedia: (accountId: string, attachmentId: string) => Promise<MediaDownloadDto>;
     readonly subscribe: (listener: (changes: readonly MessagingChangeDto[]) => void) => () => void;
   };

@@ -70,6 +70,8 @@ describe('pairing UI', () => {
           listChats: vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
           listMessages: vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
           requestHistory: vi.fn().mockResolvedValue(undefined),
+          markRead: vi.fn().mockResolvedValue(undefined),
+          sendText: vi.fn().mockResolvedValue(undefined),
           downloadMedia: vi.fn().mockRejectedValue(new Error('No fixture media')),
           subscribe: vi.fn().mockReturnValue(vi.fn()),
         },

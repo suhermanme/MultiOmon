@@ -158,6 +158,26 @@ export const migrations: readonly Migration[] = [
         AND text_content IN ('[Unsupported message type]', '[Empty message]');
     `,
   },
+  {
+    version: 7,
+    name: 'create_message_receipts',
+    sql: `
+      CREATE TABLE receipts (
+        account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+        message_id TEXT NOT NULL,
+        recipient_remote_id TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('sent', 'delivered', 'read', 'played')),
+        status_rank INTEGER NOT NULL CHECK (status_rank BETWEEN 0 AND 3),
+        occurred_at INTEGER NOT NULL,
+        PRIMARY KEY (account_id, message_id, recipient_remote_id),
+        FOREIGN KEY (account_id, message_id)
+          REFERENCES messages(account_id, id) ON DELETE CASCADE
+      ) STRICT;
+
+      CREATE INDEX receipts_message_lookup
+        ON receipts (account_id, message_id);
+    `,
+  },
 ];
 
 interface MigrationRow {

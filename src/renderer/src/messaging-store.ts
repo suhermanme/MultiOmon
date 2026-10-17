@@ -16,6 +16,13 @@ interface MessagingStoreState {
   readonly messagesNextCursor: MessagePageCursorDto | null;
   readonly messageLimit: number;
   readonly historyLoading: boolean;
+  readonly sending: boolean;
+  readonly sendError: string | null;
+  readonly pendingMessage: {
+    readonly chatId: string;
+    readonly text: string;
+    readonly replyToMessageId?: string;
+  } | null;
   readonly loading: boolean;
   readonly error: string | null;
   readonly loadAccount: (accountId: string | null) => Promise<void>;
@@ -23,6 +30,7 @@ interface MessagingStoreState {
   readonly loadMoreChats: () => Promise<void>;
   readonly loadOlderMessages: () => Promise<void>;
   readonly requestEarlierHistory: () => Promise<void>;
+  readonly sendText: (text: string, replyToMessageId?: string) => Promise<boolean>;
   readonly refresh: (changes: readonly MessagingChangeDto[]) => Promise<void>;
 }
 
@@ -67,6 +75,9 @@ export const useMessagingStore = create<MessagingStoreState>((set, get) => ({
   messagesNextCursor: null,
   messageLimit: 50,
   historyLoading: false,
+  sending: false,
+  sendError: null,
+  pendingMessage: null,
   loading: false,
   error: null,
   loadAccount: async (accountId) => {
@@ -81,6 +92,9 @@ export const useMessagingStore = create<MessagingStoreState>((set, get) => ({
         messagesNextCursor: null,
         messageLimit: 50,
         historyLoading: false,
+        sending: false,
+        sendError: null,
+        pendingMessage: null,
         loading: false,
       });
       return;
@@ -94,6 +108,9 @@ export const useMessagingStore = create<MessagingStoreState>((set, get) => ({
       messagesNextCursor: null,
       messageLimit: 50,
       historyLoading: false,
+      sending: false,
+      sendError: null,
+      pendingMessage: null,
       loading: true,
       error: null,
     });
@@ -116,6 +133,7 @@ export const useMessagingStore = create<MessagingStoreState>((set, get) => ({
       messagesNextCursor: null,
       messageLimit: 50,
       historyLoading: false,
+      sendError: null,
       loading: true,
       error: null,
     });
@@ -187,6 +205,40 @@ export const useMessagingStore = create<MessagingStoreState>((set, get) => ({
       set({ historyLoading: false });
     } catch {
       set({ historyLoading: false, error: 'Could not request earlier provider history.' });
+    }
+  },
+  sendText: async (text, replyToMessageId) => {
+    const { accountId, selectedChatId, sending } = get();
+    const normalized = text.trim();
+    if (accountId === null || selectedChatId === null || sending || normalized.length === 0) {
+      return false;
+    }
+    set({
+      sending: true,
+      sendError: null,
+      pendingMessage: {
+        chatId: selectedChatId,
+        text: normalized,
+        ...(replyToMessageId === undefined ? {} : { replyToMessageId }),
+      },
+    });
+    try {
+      await window.multiomon.messaging.sendText(
+        accountId,
+        selectedChatId,
+        normalized,
+        replyToMessageId,
+      );
+      set({ sending: false, pendingMessage: null });
+      await get().refresh([{ accountId, chatId: selectedChatId }]);
+      return true;
+    } catch {
+      set({
+        sending: false,
+        pendingMessage: null,
+        sendError: 'Message could not be sent. Check your connection and try again.',
+      });
+      return false;
     }
   },
   refresh: async (changes) => {

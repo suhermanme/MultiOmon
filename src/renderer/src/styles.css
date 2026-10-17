@@ -784,7 +784,7 @@ h1 {
   width: 100%;
   height: 100%;
   min-height: 0;
-  grid-template-rows: auto 1fr auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
 }
 
 .message-header {
@@ -826,6 +826,36 @@ h1 {
   line-height: 1.5;
 }
 
+.message-reply {
+  margin-top: 8px;
+  padding: 0;
+  border: 0;
+  color: #7cddba;
+  background: transparent;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.message-pending {
+  opacity: 0.72;
+}
+
+.reply-quote {
+  display: block;
+  max-width: 380px;
+  margin-bottom: 7px;
+  padding: 6px 9px;
+  border-left: 2px solid #68e9b8;
+  border-radius: 3px;
+  color: #91b2a5;
+  background: rgb(0 0 0 / 13%);
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .date-separator {
   align-self: center;
   margin: 7px 0;
@@ -853,6 +883,20 @@ h1 {
   color: #688078;
   font-size: 9px;
   text-align: right;
+}
+
+.receipt-status {
+  display: block;
+  margin-top: 5px;
+  color: #9fb3aa;
+  font-size: 10px;
+  letter-spacing: -1px;
+  text-align: right;
+}
+
+.receipt-read,
+.receipt-played {
+  color: #53bdeb;
 }
 
 .message-media {
@@ -908,12 +952,108 @@ h1 {
   text-transform: uppercase;
 }
 
-.projection-note {
-  padding: 13px 24px;
+.message-composer {
+  display: grid;
+  gap: 8px;
+  padding: 14px 20px 12px;
   border-top: 1px solid rgb(255 255 255 / 6%);
-  color: #61776f;
+  background: rgb(12 19 17 / 35%);
+}
+
+.composer-input-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  padding: 7px;
+  border: 1px solid rgb(255 255 255 / 10%);
+  border-radius: 14px;
+  background: #17221e;
+}
+
+.composer-input-row:focus-within {
+  border-color: rgb(104 233 184 / 45%);
+  box-shadow: 0 0 0 3px rgb(104 233 184 / 7%);
+}
+
+.composer-input-row textarea {
+  width: 100%;
+  min-height: 38px;
+  max-height: 140px;
+  resize: vertical;
+  padding: 10px 11px;
+  border: 0;
+  outline: 0;
+  color: #e4eee9;
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.composer-input-row textarea::placeholder {
+  color: #70837b;
+}
+
+.composer-input-row textarea:disabled {
+  cursor: not-allowed;
+}
+
+.composer-input-row button {
+  min-width: 76px;
+  padding: 10px 15px;
+  border: 0;
+  border-radius: 10px;
+  color: #09261b;
+  background: #68e9b8;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.composer-input-row button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.composer-hint {
+  color: #71877f;
+  font-size: 9px;
+  text-align: right;
+}
+
+.reply-preview {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 11px;
+  border-left: 2px solid #68e9b8;
+  border-radius: 6px;
+  color: #9bb2a8;
+  background: rgb(104 233 184 / 6%);
   font-size: 10px;
-  text-align: center;
+}
+
+.reply-preview span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reply-preview button {
+  flex: 0 0 auto;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  font-size: 17px;
+  cursor: pointer;
+}
+
+.composer-error {
+  margin: 0;
+  color: #ef9999;
+  font-size: 11px;
 }
 
 .empty-conversation {
@@ -1102,13 +1242,49 @@ h1 {
   }
 
   .message-header,
-  .projection-note {
+  .message-composer {
     border-color: rgb(17 65 49 / 8%);
+  }
+
+  .message-composer {
+    background: rgb(255 255 255 / 55%);
+  }
+
+  .composer-input-row {
+    border-color: rgb(17 65 49 / 12%);
+    background: #fff;
+  }
+
+  .composer-input-row textarea {
+    color: #18342c;
+  }
+
+  .composer-input-row button {
+    color: #fff;
+    background: #16875e;
+  }
+
+  .composer-hint {
+    color: #71877f;
   }
 
   .message-bubble {
     border-color: rgb(17 65 49 / 7%);
     background: #fff;
+  }
+
+  .reply-quote {
+    color: #5b786d;
+    background: rgb(17 65 49 / 5%);
+  }
+
+  .message-reply {
+    color: #147c58;
+  }
+
+  .reply-preview {
+    color: #527367;
+    background: rgb(19 137 94 / 6%);
   }
 
   .date-separator {
@@ -1124,6 +1300,10 @@ h1 {
 
   .message-outgoing {
     background: #ccebdc;
+  }
+
+  .receipt-status {
+    color: #5d7a70;
   }
 
   .panel-header {

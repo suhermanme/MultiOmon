@@ -48,6 +48,8 @@ export interface ProviderMessage {
   readonly replyToRemoteMessageId?: string;
 }
 
+export type ProviderReceiptStatus = 'sent' | 'delivered' | 'read' | 'played';
+
 export type MessagingEvent =
   | { readonly type: 'connection.changed'; readonly state: ProviderConnectionState }
   | {
@@ -62,7 +64,15 @@ export type MessagingEvent =
       readonly payload: string;
     }
   | { readonly type: 'chat.upserted'; readonly chat: ProviderChat }
-  | { readonly type: 'message.upserted'; readonly message: ProviderMessage };
+  | { readonly type: 'message.upserted'; readonly message: ProviderMessage }
+  | {
+      readonly type: 'message.receipted';
+      readonly accountId: AccountId;
+      readonly messageRemoteId: string;
+      readonly recipientRemoteId: string;
+      readonly status: ProviderReceiptStatus;
+      readonly occurredAt: number;
+    };
 
 export interface SendTextRequest {
   readonly chatRemoteId: string;
@@ -89,6 +99,7 @@ export interface MessagingSession {
   disconnect(reason?: string): Promise<void>;
   logout(): Promise<void>;
   sendText(request: SendTextRequest): Promise<ProviderMessage>;
+  markRead(chatRemoteId: string, messageRemoteIds: readonly string[]): Promise<void>;
   requestHistory(request: HistoryRequest): Promise<void>;
   downloadMedia(remoteReference: string): Promise<Uint8Array>;
   subscribe(listener: MessagingEventListener): Unsubscribe;

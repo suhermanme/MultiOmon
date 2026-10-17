@@ -53,6 +53,7 @@ void app.whenReady().then(async () => {
     repositories.chats,
     repositories.messages,
     repositories.attachments,
+    repositories.receipts,
   );
   const unregisterIpcHandlers = registerIpcHandlers({
     accountManager,

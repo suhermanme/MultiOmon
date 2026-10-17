@@ -80,6 +80,10 @@ class PairingSession implements MessagingSession {
     return Promise.reject(new Error(`Unexpected sendText for ${request.chatRemoteId}`));
   }
 
+  markRead(): Promise<void> {
+    return Promise.resolve();
+  }
+
   requestHistory(): Promise<void> {
     return Promise.resolve();
   }
@@ -153,6 +157,10 @@ function createHarness() {
       getByRemoteId: () => null,
       getOldestByChat: () => null,
       listPage: () => ({ items: [], nextCursor: null }),
+    },
+    receipts: {
+      save: () => undefined,
+      listByMessage: () => [],
     },
   });
   const accountManager = new AccountManager();

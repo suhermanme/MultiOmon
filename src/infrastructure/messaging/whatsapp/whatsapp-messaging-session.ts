@@ -7,6 +7,7 @@ import {
   type ProviderChat,
   type ProviderConnectionState,
   type ProviderMessage,
+  type ProviderReceiptStatus,
   type SendTextRequest,
 } from '../../../application/ports/messaging-provider';
 import type { AccountId } from '../../../domain';
@@ -24,6 +25,24 @@ import * as fs from 'node:fs';
 
 function now(): number {
   return Date.now();
+}
+
+// proto.WebMessageInfo.Status values from the Baileys WAProto bundle:
+// ERROR=0, REMOTE_CACK=1, SERVER_ACK=2, DELIVERY_ACK=3, READ=4, PLAYED=5.
+function toReceiptStatus(status: number | null | undefined): ProviderReceiptStatus | null {
+  switch (status) {
+    case 1:
+    case 2:
+      return 'sent';
+    case 3:
+      return 'delivered';
+    case 4:
+      return 'read';
+    case 5:
+      return 'played';
+    default:
+      return null;
+  }
 }
 
 function extractPhoneFromJid(jid: string): string {
@@ -370,6 +389,21 @@ export class WhatsappMessagingSession implements MessagingSession {
     return message;
   }
 
+  async markRead(chatRemoteId: string, messageRemoteIds: readonly string[]): Promise<void> {
+    this.#assertNotDisposed();
+    if (this.#state.kind !== 'connected' || !this.#socket) {
+      throw new ProviderError(
+        this.accountId,
+        'not-connected',
+        'Cannot mark messages read while disconnected',
+      );
+    }
+    if (messageRemoteIds.length === 0) return;
+    await this.#socket.readMessages(
+      messageRemoteIds.map((id) => ({ remoteJid: toWhatsappJid(chatRemoteId), id, fromMe: false })),
+    );
+  }
+
   async requestHistory(request: HistoryRequest): Promise<void> {
     this.#assertNotDisposed();
     if (this.#state.kind !== 'connected' || !this.#socket) {
@@ -650,6 +684,47 @@ export class WhatsappMessagingSession implements MessagingSession {
         }
       }
     });
+
+    // Receipt ingestion (M08): Baileys 6.7.x splits the channels — 1:1 delivery/read
+    // acknowledgements arrive as `messages.update` carrying a numeric
+    // WebMessageInfo.Status, while group participant receipts arrive as
+    // `message-receipt.update`. Only receipts about our own messages
+    // (key.fromMe) are delivery feedback.
+    socket.ev.on('messages.update', (updates) => {
+      for (const { key, update } of updates) {
+        const status = toReceiptStatus(update.status);
+        if (!status || key.fromMe !== true || !key.id || !key.remoteJid) continue;
+        this.#emit({
+          type: 'message.receipted',
+          accountId: this.accountId,
+          messageRemoteId: key.id,
+          recipientRemoteId: key.remoteJid,
+          status,
+          occurredAt: now(),
+        });
+      }
+    });
+
+    socket.ev.on('message-receipt.update', (receipts) => {
+      for (const { key, receipt } of receipts) {
+        const status =
+          receipt.readTimestamp !== undefined
+            ? 'read'
+            : receipt.receiptTimestamp !== undefined
+              ? 'delivered'
+              : null;
+        const recipientRemoteId = receipt.userJid ?? key.participant;
+        if (!status || key.fromMe !== true || !key.id || !recipientRemoteId) continue;
+        this.#emit({
+          type: 'message.receipted',
+          accountId: this.accountId,
+          messageRemoteId: key.id,
+          recipientRemoteId,
+          status,
+          occurredAt: now(),
+        });
+      }
+    });
   }
 
   #requireSerializer(): (message: proto.IWebMessageInfo) => string {
@@ -722,6 +797,8 @@ export class WhatsappMessagingSession implements MessagingSession {
     socket.ev.removeAllListeners('contacts.update');
     socket.ev.removeAllListeners('messaging-history.set');
     socket.ev.removeAllListeners('messages.upsert');
+    socket.ev.removeAllListeners('messages.update');
+    socket.ev.removeAllListeners('message-receipt.update');
     socket.ev.removeAllListeners('creds.update');
     socket.end(undefined);
     this.#socket = null;

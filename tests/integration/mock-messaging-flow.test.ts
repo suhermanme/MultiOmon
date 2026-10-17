@@ -56,7 +56,12 @@ describe('mock provider to renderer projection flow', () => {
       now: () => 200,
     }));
     const service = new MessagingService(provider, database, repositories);
-    const view = new MessagingView(repositories.chats, repositories.messages);
+    const view = new MessagingView(
+      repositories.chats,
+      repositories.messages,
+      undefined,
+      repositories.receipts,
+    );
     const changes = vi.fn();
     service.subscribe(changes);
     const managedSession = service.createAccountSession(account.id);
@@ -86,10 +91,12 @@ describe('mock provider to renderer projection flow', () => {
       { kind: 'text', text: 'Hello from the provider' },
       { kind: 'text', text: 'Hello back' },
     ]);
+    expect(messages.items[1]?.receiptStatus).toBe('read');
     // chat.upserted (seed) + message.upserted (seed) + message.upserted (send) +
+    // message.receipted (delivered) + message.receipted (read) +
     // chat.upserted (send) + chat.upserted (incoming delta); the duplicate
     // incoming message is idempotent and yields no change.
-    expect(changes).toHaveBeenCalledTimes(5);
+    expect(changes).toHaveBeenCalledTimes(7);
     expect(managedSession.getState().kind).toBe('connected');
     service.dispose();
   });

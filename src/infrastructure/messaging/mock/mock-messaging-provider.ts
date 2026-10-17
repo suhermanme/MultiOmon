@@ -151,6 +151,24 @@ export class MockMessagingSession implements MessagingSession {
         : { replyToRemoteMessageId: request.replyToRemoteMessageId }),
     };
     this.#emit({ type: 'message.upserted', message });
+    // Deterministic delivery feedback so the mock transport exercises the same
+    // receipt projection path as Baileys: the recipient acknowledges, then reads.
+    this.#emit({
+      type: 'message.receipted',
+      accountId: this.accountId,
+      messageRemoteId: message.remoteId,
+      recipientRemoteId: request.chatRemoteId,
+      status: 'delivered',
+      occurredAt: this.#now(),
+    });
+    this.#emit({
+      type: 'message.receipted',
+      accountId: this.accountId,
+      messageRemoteId: message.remoteId,
+      recipientRemoteId: request.chatRemoteId,
+      status: 'read',
+      occurredAt: this.#now(),
+    });
     const base = this.#chats.get(request.chatRemoteId);
     this.#recordChat({
       ...(base ?? {
@@ -183,6 +201,11 @@ export class MockMessagingSession implements MessagingSession {
         this.#emit({ type: 'message.upserted', message });
       }
     }
+    return Promise.resolve();
+  }
+
+  markRead(): Promise<void> {
+    this.#assertNotDisposed();
     return Promise.resolve();
   }
 

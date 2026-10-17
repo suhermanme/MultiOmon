@@ -33,6 +33,7 @@ describe('renderer shell', () => {
   let listChats: Mock<DesktopApi['messaging']['listChats']>;
   let listMessages: Mock<DesktopApi['messaging']['listMessages']>;
   let requestHistory: Mock<DesktopApi['messaging']['requestHistory']>;
+  let sendText: Mock<DesktopApi['messaging']['sendText']>;
   let downloadMedia: Mock<DesktopApi['messaging']['downloadMedia']>;
 
   beforeEach(() => {
@@ -88,6 +89,7 @@ describe('renderer shell', () => {
     requestHistory = vi
       .fn<DesktopApi['messaging']['requestHistory']>()
       .mockResolvedValue(undefined);
+    sendText = vi.fn<DesktopApi['messaging']['sendText']>().mockResolvedValue(undefined);
     downloadMedia = vi.fn<DesktopApi['messaging']['downloadMedia']>().mockResolvedValue({
       attachmentId: 'attachment-1',
       kind: 'image',
@@ -119,6 +121,8 @@ describe('renderer shell', () => {
           listChats,
           listMessages,
           requestHistory,
+          markRead: vi.fn().mockResolvedValue(undefined),
+          sendText,
           downloadMedia,
           subscribe: vi.fn().mockReturnValue(vi.fn()),
         },
@@ -146,6 +150,39 @@ describe('renderer shell', () => {
     expect(screen.getByText('Mock mode')).toBeVisible();
     expect(screen.getByRole('button', { name: /Example conversation/ })).toBeVisible();
     expect(await screen.findByText('Mock provider projection is connected.')).toBeVisible();
+  });
+
+  it('shows delivery status ticks on outgoing messages', async () => {
+    listMessages.mockImplementation((accountId, chatId) =>
+      Promise.resolve({
+        items: [
+          {
+            id: `${accountId}-incoming`,
+            accountId,
+            chatId,
+            direction: 'incoming',
+            sentAt: 100,
+            content: { kind: 'text', text: 'Incoming message' },
+          },
+          {
+            id: `${accountId}-outgoing`,
+            accountId,
+            chatId,
+            direction: 'outgoing',
+            sentAt: 110,
+            content: { kind: 'text', text: 'Outgoing message' },
+            receiptStatus: 'read',
+          },
+        ],
+        nextCursor: null,
+      }),
+    );
+
+    render(createElement(App));
+
+    expect(await screen.findByText('Outgoing message')).toBeVisible();
+    expect(screen.getByLabelText('Read')).toBeVisible();
+    expect(screen.queryByLabelText('Delivered')).toBeNull();
   });
 
   it('switches active account without changing connection indicators', async () => {

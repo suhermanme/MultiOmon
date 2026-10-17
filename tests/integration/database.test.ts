@@ -77,12 +77,12 @@ describe('SQLite persistence', () => {
   });
 
   it('creates and reapplies versioned migrations safely', () => {
-    expect(getAppliedMigrationVersions(database.connection)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(getAppliedMigrationVersions(database.connection)).toEqual([1, 2, 3, 4, 5, 6, 7]);
 
     database.close();
     database = SqliteDatabase.open(filePath);
 
-    expect(getAppliedMigrationVersions(database.connection)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(getAppliedMigrationVersions(database.connection)).toEqual([1, 2, 3, 4, 5, 6, 7]);
   });
 
   it('upgrades an existing version-one database without destroying its data', () => {
@@ -148,7 +148,7 @@ describe('SQLite persistence', () => {
     const upgraded = SqliteDatabase.open(legacyPath);
     const upgradedRepositories = createRepositories(upgraded);
 
-    expect(getAppliedMigrationVersions(upgraded.connection)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(getAppliedMigrationVersions(upgraded.connection)).toEqual([1, 2, 3, 4, 5, 6, 7]);
     const legacyAccount = upgradedRepositories.accounts.list()[0];
     expect(legacyAccount?.displayName).toBe('Legacy account');
     expect(legacyAccount?.phoneNumber).toBeUndefined();
@@ -395,5 +395,65 @@ describe('SQLite persistence', () => {
       }),
     ).toThrow(DatabaseError);
     expect(repositories.accounts.getById(rolledBackAccount.id)).toBeNull();
+  });
+
+  it('persists receipts with monotonic status, foreign keys, and account cascade', () => {
+    const savedAccount = account('receipts');
+    const savedChat = chat(savedAccount);
+    const savedMessage: Message = {
+      ...message(savedAccount, savedChat, 'receipt-message', 'remote-receipt', 700),
+      direction: 'outgoing',
+    };
+    repositories.accounts.save(savedAccount);
+    repositories.chats.save(savedChat);
+    repositories.messages.insert(savedMessage);
+
+    repositories.receipts.save({
+      accountId: savedAccount.id,
+      messageId: savedMessage.id,
+      recipientRemoteId: 'a@remote',
+      status: 'read',
+      occurredAt: 800,
+    });
+    repositories.receipts.save({
+      accountId: savedAccount.id,
+      messageId: savedMessage.id,
+      recipientRemoteId: 'a@remote',
+      status: 'delivered',
+      occurredAt: 801,
+    });
+    repositories.receipts.save({
+      accountId: savedAccount.id,
+      messageId: savedMessage.id,
+      recipientRemoteId: 'b@remote',
+      status: 'sent',
+      occurredAt: 802,
+    });
+
+    database.close();
+    database = SqliteDatabase.open(filePath);
+    repositories = createRepositories(database);
+
+    expect(
+      repositories.receipts
+        .listByMessage(savedAccount.id, savedMessage.id)
+        .map((receipt) => [receipt.recipientRemoteId, receipt.status, receipt.occurredAt]),
+    ).toEqual([
+      ['a@remote', 'read', 800],
+      ['b@remote', 'sent', 802],
+    ]);
+
+    expect(() =>
+      repositories.receipts.save({
+        accountId: savedAccount.id,
+        messageId: createMessageId('missing-message'),
+        recipientRemoteId: 'a@remote',
+        status: 'sent',
+        occurredAt: 900,
+      }),
+    ).toThrow(DatabaseError);
+
+    repositories.accounts.delete(savedAccount.id);
+    expect(repositories.receipts.listByMessage(savedAccount.id, savedMessage.id)).toHaveLength(0);
   });
 });

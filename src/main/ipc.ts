@@ -4,7 +4,13 @@ import { toAccountSnapshotDto } from '../application/accounts/account-view';
 import type { AccountProvisioningService } from '../application/accounts/account-provisioning';
 import type { MessagingService } from '../application/messaging/messaging-service';
 import { toPairingUpdateDto, type MessagingView } from '../application/messaging/messaging-view';
-import { createAccountId, createAttachmentId, createChatId, type AccountId } from '../domain';
+import {
+  createAccountId,
+  createAttachmentId,
+  createChatId,
+  createMessageId,
+  type AccountId,
+} from '../domain';
 import {
   IPC_CHANNELS,
   type AccountConnectionStateDto,
@@ -193,6 +199,37 @@ export function registerIpcHandlers(services: IpcServices): () => void {
   );
 
   ipcMain.handle(
+    IPC_CHANNELS.messageMarkRead,
+    async (_event, accountId: unknown, chatId: unknown) => {
+      if (typeof chatId !== 'string') throw new TypeError('Chat ID must be a string');
+      await messagingService.markChatRead(readAccountId(accountId), createChatId(chatId));
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.messageSendText,
+    async (
+      _event,
+      accountId: unknown,
+      chatId: unknown,
+      text: unknown,
+      replyToMessageId: unknown,
+    ) => {
+      if (typeof chatId !== 'string') throw new TypeError('Chat ID must be a string');
+      if (typeof text !== 'string') throw new TypeError('Message text must be a string');
+      if (replyToMessageId !== undefined && typeof replyToMessageId !== 'string') {
+        throw new TypeError('Reply message ID must be a string');
+      }
+      await messagingService.sendText(
+        readAccountId(accountId),
+        createChatId(chatId),
+        text,
+        replyToMessageId === undefined ? undefined : createMessageId(replyToMessageId),
+      );
+    },
+  );
+
+  ipcMain.handle(
     IPC_CHANNELS.mediaDownload,
     async (_event, accountId: unknown, attachmentId: unknown) => {
       if (typeof attachmentId !== 'string') {
@@ -253,6 +290,8 @@ export function registerIpcHandlers(services: IpcServices): () => void {
     ipcMain.removeHandler(IPC_CHANNELS.chatList);
     ipcMain.removeHandler(IPC_CHANNELS.messageList);
     ipcMain.removeHandler(IPC_CHANNELS.messageHistory);
+    ipcMain.removeHandler(IPC_CHANNELS.messageMarkRead);
+    ipcMain.removeHandler(IPC_CHANNELS.messageSendText);
     ipcMain.removeHandler(IPC_CHANNELS.mediaDownload);
   };
 }
