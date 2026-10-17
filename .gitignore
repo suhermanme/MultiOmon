@@ -16,3 +16,6 @@ test-results/
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
+
+# Local assistant tooling directories.
+.claude/
